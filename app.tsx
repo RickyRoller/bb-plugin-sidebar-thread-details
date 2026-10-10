@@ -171,6 +171,25 @@ function NewProjectIcon() {
   );
 }
 
+const COLLAPSED_PROJECTS_KEY = "sidebar-thread-details:collapsed-projects";
+
+function loadCollapsedProjects(): Set<string> {
+  try {
+    const stored = JSON.parse(localStorage.getItem(COLLAPSED_PROJECTS_KEY) ?? "[]");
+    return new Set(Array.isArray(stored) ? stored : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedProjects(ids: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_PROJECTS_KEY, JSON.stringify([...ids]));
+  } catch {
+    // Storage can be unavailable (private mode, quota); collapse still works for the session.
+  }
+}
+
 function ChevronIcon({ collapsed }: { collapsed: boolean }) {
   return (
     <svg
@@ -1298,7 +1317,7 @@ function SidebarThreadList({
     {},
   );
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
-    () => new Set(),
+    loadCollapsedProjects,
   );
   const [orderedProjectIds, setOrderedProjectIds] = useState<string[]>([]);
   const projectOrderRequestId = useRef(0);
@@ -1551,6 +1570,7 @@ function SidebarThreadList({
                           const next = new Set(current);
                           if (next.has(group.id)) next.delete(group.id);
                           else next.add(group.id);
+                          saveCollapsedProjects(next);
                           return next;
                         });
                       }}
