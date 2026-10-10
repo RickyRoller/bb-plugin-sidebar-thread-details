@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DndContext,
   MouseSensor,
@@ -22,9 +30,15 @@ import {
   experimental_useSidebarThreads,
   type PluginSidebarThread,
   type PluginThreadListProps,
+  useRealtime,
   useRpc,
 } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
+import {
+  appearanceSchema,
+  defaultAppearance,
+  type Appearance,
+} from "./appearance";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import {
@@ -35,6 +49,35 @@ import {
   DialogHeader,
   DialogTitle,
 } from "./components/ui/dialog";
+
+const AppearanceContext = createContext(defaultAppearance);
+
+function useAppearance() {
+  const rpc = useRpc<typeof rpcContract>();
+  const [appearance, setAppearance] = useState(defaultAppearance);
+  const receiveAppearance = useCallback((payload: unknown) => {
+    const parsed = appearanceSchema.safeParse(payload);
+    if (parsed.success) setAppearance(parsed.data);
+  }, []);
+
+  useRealtime("appearance", receiveAppearance);
+  useEffect(() => {
+    let current = true;
+    void rpc.call("getAppearance", {}).then(
+      (value) => {
+        if (current) setAppearance(value);
+      },
+      () => {
+        // Keep theme defaults if the backend is temporarily unavailable.
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [rpc]);
+
+  return appearance;
+}
 
 async function copyThreadId(threadId: string) {
   try {
@@ -238,6 +281,7 @@ function ThreadRow({
   childrenSummary,
   onNavigate,
 }: ThreadRowProps) {
+  const appearance = useContext(AppearanceContext);
   const actions = experimental_useSidebarThreadActions();
   const { splitProps } = experimental_useSidebarThreadSplit(thread.id);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -302,10 +346,11 @@ function ThreadRow({
   return (
     <div
       className={`group/thread relative mr-2 rounded-lg transition-colors ${
-        nested ? "ml-5" : "ml-2"
+        nested ? "" : "ml-2"
       } ${
         active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
       }`}
+      style={nested ? { marginLeft: appearance.threadIndent } : undefined}
     >
       <a
         {...splitProps}
@@ -347,6 +392,7 @@ function ThreadRow({
           ) : (
             <span
               className={`truncate text-sm ${thread.isUnread && !isChild ? "font-semibold" : "font-medium"}`}
+              style={{ color: appearance.threadColor || undefined }}
               title={title}
             >
               {title}
@@ -359,13 +405,21 @@ function ThreadRow({
             className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-[11px] leading-4 text-muted-foreground/70"
             title={branchName ? `${projectName} - ${branchName}` : projectName}
           >
-            <span className="shrink-0">{projectName}</span>
+            <span
+              className="shrink-0"
+              style={{ color: appearance.projectColor || undefined }}
+            >
+              {projectName}
+            </span>
             {branchName ? (
-              <>
+              <span
+                className="flex min-w-0 items-center gap-1"
+                style={{ color: appearance.branchColor || undefined }}
+              >
                 <span aria-hidden="true">-</span>
                 <BranchIcon />
                 <span className="truncate">{branchName}</span>
-              </>
+              </span>
             ) : null}
           </span>
         ) : null}
@@ -506,6 +560,7 @@ function ChildThreadRow({
   onNavigate: () => void;
   thread: PluginSidebarThread;
 }) {
+  const appearance = useContext(AppearanceContext);
   const actions = experimental_useSidebarThreadActions();
   const { splitProps } = experimental_useSidebarThreadSplit(thread.id);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -555,6 +610,7 @@ function ChildThreadRow({
                 ? "text-foreground/85"
                 : "text-muted-foreground/80 group-hover/child:text-foreground"
           }`}
+          style={{ color: appearance.childThreadColor || undefined }}
           title={title}
         >
           {title}
@@ -670,7 +726,7 @@ function ChildThreadList({
   );
 }
 
-function SortablePinnedRoot({
+function SortableListItem({
   children,
   disabled,
   id,
@@ -822,7 +878,7 @@ function PinnedThreadsSection({
           const expanded = expandAll || expandedParents.has(thread.id);
           const workingCount = children.filter(isThreadWorking).length;
           return (
-            <SortablePinnedRoot
+            <SortableListItem
               disabled={orderedRoots.length < 2}
               id={thread.id}
               key={thread.id}
@@ -856,7 +912,7 @@ function PinnedThreadsSection({
                   onNavigate={onNavigate}
                 />
               ) : null}
-            </SortablePinnedRoot>
+            </SortableListItem>
           );
           })}
           </div>
@@ -1025,6 +1081,7 @@ function ProjectGroup({
   onNavigate: () => void;
   onToggle: () => void;
 }) {
+  const appearance = useContext(AppearanceContext);
   const actions = experimental_useSidebarThreadActions();
   const rpc = useRpc<typeof rpcContract>();
   const [showAll, setShowAll] = useState(false);
@@ -1064,9 +1121,17 @@ function ProjectGroup({
           type="button"
         >
           <ChevronIcon collapsed={collapsed} />
-          <span className="shrink-0">{group.name}</span>
+          <span
+            className="shrink-0"
+            style={{ color: appearance.projectColor || undefined }}
+          >
+            {group.name}
+          </span>
           {group.branchName ? (
-            <span className="flex min-w-0 items-center gap-1 opacity-75">
+            <span
+              className="flex min-w-0 items-center gap-1 opacity-75"
+              style={{ color: appearance.branchColor || undefined }}
+            >
               <span aria-hidden="true">-</span>
               <BranchIcon />
               <span className="truncate">{group.branchName}</span>
@@ -1221,6 +1286,7 @@ function SidebarThreadList({
   onNavigate,
   searchQuery,
 }: PluginThreadListProps) {
+  const appearance = useAppearance();
   const { status, threads, projects } = experimental_useSidebarThreads();
   const actions = experimental_useSidebarThreadActions();
   const rpc = useRpc<typeof rpcContract>();
@@ -1233,6 +1299,14 @@ function SidebarThreadList({
   );
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
     () => new Set(),
+  );
+  const [orderedProjectIds, setOrderedProjectIds] = useState<string[]>([]);
+  const projectOrderRequestId = useRef(0);
+  const projectSensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 6 },
+    }),
   );
   const projectNames = useMemo(
     () => new Map(projects.map((project) => [project.id, project.name])),
@@ -1335,6 +1409,45 @@ function SidebarThreadList({
     }
     return groups;
   }, [pinnedThreads, projectBranches, projects, query, visibleThreads]);
+  const projectGroupsById = new Map(projectGroups.map((group) => [group.id, group]));
+  const orderedProjectGroups = orderedProjectIds
+    .flatMap((id) => projectGroupsById.get(id) ?? [])
+    .concat(projectGroups.filter((group) => !orderedProjectIds.includes(group.id)));
+
+  useEffect(() => {
+    setOrderedProjectIds(projects.map((project) => project.id));
+  }, [projectIdsKey]);
+
+  const reorderProject = async (event: DragEndEvent) => {
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : null;
+    if (!overId || activeId === overId) return;
+
+    const sortableGroups = orderedProjectGroups.filter((group) => group.id !== "unknown");
+    const oldIndex = sortableGroups.findIndex((group) => group.id === activeId);
+    const newIndex = sortableGroups.findIndex((group) => group.id === overId);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const nextGroups = arrayMove(sortableGroups, oldIndex, newIndex);
+    const movedIndex = nextGroups.findIndex((group) => group.id === activeId);
+    const requestId = ++projectOrderRequestId.current;
+    setOrderedProjectIds(nextGroups.map((group) => group.id));
+
+    try {
+      const result = await rpc.call("reorderProject", {
+        projectId: activeId,
+        previousProjectId: nextGroups[movedIndex - 1]?.id ?? null,
+        nextProjectId: nextGroups[movedIndex + 1]?.id ?? null,
+      });
+      if (requestId === projectOrderRequestId.current) {
+        setOrderedProjectIds(result.projectIds);
+      }
+    } catch {
+      if (requestId === projectOrderRequestId.current) {
+        setOrderedProjectIds(projects.map((project) => project.id));
+      }
+    }
+  };
 
   const openCreatedProject = (projectId: string) => {
     actions.openNewThread({ projectId, focusPrompt: true });
@@ -1391,7 +1504,7 @@ function SidebarThreadList({
     return <div className="px-4 py-6 text-sm text-destructive">Couldn’t load threads.</div>;
   }
   return (
-    <>
+    <AppearanceContext.Provider value={appearance}>
       <div className="space-y-2 py-1">
         {pinnedThreads.length ? (
           <PinnedThreadsSection
@@ -1409,26 +1522,44 @@ function SidebarThreadList({
             busy={createProjectBusy}
             onNewProject={() => void startProjectCreation()}
           />
-          <div className="mt-1 space-y-2">
-            {projectGroups.map((group) => (
-              <ProjectGroup
-                activeThreadId={activeThreadId}
-                collapsed={!query && collapsedProjects.has(group.id)}
-                group={group}
-                key={group.id}
-                limitThreads={!query}
-                onNavigate={onNavigate}
-                onToggle={() => {
-                  setCollapsedProjects((current) => {
-                    const next = new Set(current);
-                    if (next.has(group.id)) next.delete(group.id);
-                    else next.add(group.id);
-                    return next;
-                  });
-                }}
-              />
-            ))}
-          </div>
+          <DndContext
+            collisionDetection={closestCenter}
+            onDragEnd={(event) => void reorderProject(event)}
+            sensors={projectSensors}
+          >
+            <SortableContext
+              items={orderedProjectGroups
+                .filter((group) => group.id !== "unknown")
+                .map((group) => group.id)}
+              strategy={verticalListSortingStrategy}
+            >
+              <div className="mt-1 space-y-2">
+                {orderedProjectGroups.map((group) => (
+                  <SortableListItem
+                    disabled={Boolean(query) || group.id === "unknown" || projects.length < 2}
+                    id={group.id}
+                    key={group.id}
+                  >
+                    <ProjectGroup
+                      activeThreadId={activeThreadId}
+                      collapsed={!query && collapsedProjects.has(group.id)}
+                      group={group}
+                      limitThreads={!query}
+                      onNavigate={onNavigate}
+                      onToggle={() => {
+                        setCollapsedProjects((current) => {
+                          const next = new Set(current);
+                          if (next.has(group.id)) next.delete(group.id);
+                          else next.add(group.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  </SortableListItem>
+                ))}
+              </div>
+            </SortableContext>
+          </DndContext>
         </section>
 
         {visibleThreads.length === 0 ? (
@@ -1445,11 +1576,172 @@ function SidebarThreadList({
         onOpenChange={setCreateProjectOpen}
         open={createProjectOpen}
       />
-    </>
+    </AppearanceContext.Provider>
+  );
+}
+
+type ColorKey =
+  | "projectColor"
+  | "branchColor"
+  | "threadColor"
+  | "childThreadColor";
+
+const colorFields: readonly { key: ColorKey; label: string }[] = [
+  { key: "projectColor", label: "Project name" },
+  { key: "branchColor", label: "Branch name" },
+  { key: "threadColor", label: "Thread name" },
+  { key: "childThreadColor", label: "Child thread name" },
+];
+
+function AppearanceSettings() {
+  const rpc = useRpc<typeof rpcContract>();
+  const appearance = useAppearance();
+  const [draft, setDraft] = useState<Appearance>(appearance);
+  const [saving, setSaving] = useState(false);
+  const parsed = appearanceSchema.safeParse(draft);
+
+  useEffect(() => setDraft(appearance), [appearance]);
+
+  const save = async () => {
+    if (!parsed.success || saving) return;
+    setSaving(true);
+    try {
+      setDraft(await rpc.call("updateAppearance", parsed.data));
+      toast.success("Sidebar appearance saved");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn’t save appearance");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const reset = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      setDraft(await rpc.call("resetAppearance", {}));
+      toast.success("Sidebar appearance reset");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Couldn’t reset appearance");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form
+      className="max-w-xl space-y-5 rounded-lg border border-border p-4"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+    >
+      <div className="space-y-3">
+        {colorFields.map(({ key, label }) => {
+          const valid = /^$|^#[0-9a-fA-F]{6}$/.test(draft[key]);
+          return (
+            <label className="grid gap-2 sm:grid-cols-[1fr_auto_8rem] sm:items-center" key={key}>
+              <span className="text-sm font-medium text-foreground">{label}</span>
+              <input
+                aria-label={`${label} color picker`}
+                className="h-8 w-10 cursor-pointer rounded border border-input bg-transparent p-1"
+                key={valid && draft[key] ? "color" : "theme"}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, [key]: event.target.value }))
+                }
+                type="color"
+                value={valid && draft[key] ? draft[key] : undefined}
+              />
+              <input
+                aria-invalid={!valid}
+                className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs text-foreground outline-none focus:border-ring aria-[invalid=true]:border-destructive"
+                maxLength={7}
+                onChange={(event) =>
+                  setDraft((current) => ({ ...current, [key]: event.target.value }))
+                }
+                placeholder="Use theme"
+                spellCheck={false}
+                value={draft[key]}
+              />
+            </label>
+          );
+        })}
+      </div>
+
+      <label className="grid gap-2 sm:grid-cols-[1fr_12rem] sm:items-center">
+        <span>
+          <span className="block text-sm font-medium text-foreground">Thread indentation</span>
+          <span className="text-xs text-muted-foreground">{draft.threadIndent}px from the left edge</span>
+        </span>
+        <input
+          aria-label="Thread indentation"
+          max={40}
+          min={8}
+          onChange={(event) =>
+            setDraft((current) => ({
+              ...current,
+              threadIndent: event.target.valueAsNumber,
+            }))
+          }
+          step={1}
+          type="range"
+          value={draft.threadIndent}
+        />
+      </label>
+
+      <div className="rounded-md bg-muted/50 p-3">
+        <div className="mx-2 flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium">
+          <ChevronIcon collapsed={false} />
+          <span style={{ color: draft.projectColor || undefined }}>Example project</span>
+          <span
+            className="flex items-center gap-1 opacity-75"
+            style={{ color: draft.branchColor || undefined }}
+          >
+            <span aria-hidden="true">-</span>
+            <BranchIcon />
+            main
+          </span>
+        </div>
+        <div
+          className="mr-2 rounded-lg"
+          style={{ marginLeft: draft.threadIndent }}
+        >
+          <div
+            className="px-2.5 py-2 text-sm font-medium"
+            style={{ color: draft.threadColor || undefined }}
+          >
+            Example thread
+          </div>
+        </div>
+        <div className="ml-7 mr-2 border-l border-border/70 pl-1">
+          <div
+            className="py-[3px] pl-2 text-xs leading-5"
+            style={{ color: draft.childThreadColor || undefined }}
+          >
+            Child thread
+          </div>
+        </div>
+      </div>
+
+      <div className="flex justify-end gap-2">
+        <Button disabled={saving} onClick={() => void reset()} size="sm" type="button" variant="outline">
+          Reset
+        </Button>
+        <Button disabled={saving || !parsed.success} size="sm" type="submit">
+          {saving ? "Saving…" : "Save"}
+        </Button>
+      </div>
+    </form>
   );
 }
 
 export default definePluginApp((app) => {
+  app.slots.settingsSection({
+    id: "appearance",
+    title: "Sidebar appearance",
+    description: "Tune label colors and thread indentation. Empty colors use the BB theme.",
+    component: AppearanceSettings,
+  });
   app.slots.experimental_threadList({
     id: "thread-details",
     title: "Thread details",
