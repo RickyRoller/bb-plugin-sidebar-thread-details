@@ -11,9 +11,9 @@ export const appearanceSchema = z.object({
 export type Appearance = z.infer<typeof appearanceSchema>;
 
 export const defaultAppearance: Appearance = {
-  projectColor: "",
-  branchColor: "",
+  projectColor: "#349383",
+  branchColor: "#7783df",
   threadColor: "",
   childThreadColor: "",
-  threadIndent: 24,
+  threadIndent: 25,
 };
