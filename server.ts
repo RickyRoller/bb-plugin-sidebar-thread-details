@@ -1,6 +1,7 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { hostContract } from "./contract.js";
+import { appearanceSchema, defaultAppearance } from "./appearance.js";
 
 export const rpcContract = defineRpcContract({
   projectBranches: {
@@ -31,6 +32,14 @@ export const rpcContract = defineRpcContract({
     input: z.object({ projectId: z.string() }).strict(),
     output: z.object({ ok: z.literal(true) }).strict(),
   },
+  reorderProject: {
+    input: z.object({
+      projectId: z.string(),
+      previousProjectId: z.string().nullable(),
+      nextProjectId: z.string().nullable(),
+    }).strict(),
+    output: z.object({ projectIds: z.array(z.string()) }).strict(),
+  },
   reorderPinnedThread: {
     input: z.object({
       threadId: z.string(),
@@ -43,7 +52,27 @@ export const rpcContract = defineRpcContract({
     input: z.object({}).strict(),
     output: z.object({ threadIds: z.array(z.string()) }),
   },
+  getAppearance: {
+    input: z.object({}).strict(),
+    output: appearanceSchema,
+  },
+  updateAppearance: {
+    input: appearanceSchema,
+    output: appearanceSchema,
+  },
+  resetAppearance: {
+    input: z.object({}).strict(),
+    output: appearanceSchema,
+  },
 });
+
+const APPEARANCE_KEY = "appearance";
+
+async function getAppearance(bb: BbPluginApi) {
+  const stored = await bb.storage.kv.get(APPEARANCE_KEY);
+  const parsed = appearanceSchema.safeParse(stored);
+  return parsed.success ? parsed.data : defaultAppearance;
+}
 
 async function getPinnedThreadOrder(bb: BbPluginApi) {
   const threads = await bb.sdk.threads.list({ archived: false });
@@ -142,6 +171,14 @@ export default function plugin(bb: BbPluginApi) {
         { hostId: source.hostId },
       );
     },
+    async reorderProject({ projectId, previousProjectId, nextProjectId }) {
+      const projects = await bb.sdk.projects.reorder({
+        projectId,
+        previousProjectId,
+        nextProjectId,
+      });
+      return { projectIds: projects.map((project) => project.id) };
+    },
     async reorderPinnedThread({ threadId, previousThreadId, nextThreadId }) {
       const threads = await bb.sdk.threads.reorderPinned({
         threadId,
@@ -152,6 +189,19 @@ export default function plugin(bb: BbPluginApi) {
     },
     async pinnedThreadOrder() {
       return { threadIds: await getPinnedThreadOrder(bb) };
+    },
+    async getAppearance() {
+      return getAppearance(bb);
+    },
+    async updateAppearance(appearance) {
+      await bb.storage.kv.set(APPEARANCE_KEY, appearance);
+      bb.realtime.publish("appearance", appearance);
+      return appearance;
+    },
+    async resetAppearance() {
+      await bb.storage.kv.delete(APPEARANCE_KEY);
+      bb.realtime.publish("appearance", defaultAppearance);
+      return defaultAppearance;
     },
   });
 }
