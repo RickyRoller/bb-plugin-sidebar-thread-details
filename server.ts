@@ -64,6 +64,11 @@ export const rpcContract = defineRpcContract({
     input: z.object({}).strict(),
     output: appearanceSchema,
   },
+  // Tells every open sidebar to reload its Sages section.
+  refreshSages: {
+    input: z.object({}).strict(),
+    output: z.object({ ok: z.literal(true) }),
+  },
 });
 
 const APPEARANCE_KEY = "appearance";
@@ -202,6 +207,10 @@ export default function plugin(bb: BbPluginApi) {
       await bb.storage.kv.delete(APPEARANCE_KEY);
       bb.realtime.publish("appearance", defaultAppearance);
       return defaultAppearance;
+    },
+    async refreshSages() {
+      bb.realtime.publish("sages-refresh", {});
+      return { ok: true as const };
     },
   });
 }

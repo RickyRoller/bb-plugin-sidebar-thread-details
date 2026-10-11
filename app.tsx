@@ -30,9 +30,13 @@ import {
   experimental_useSidebarThreads,
   type PluginSidebarThread,
   type PluginThreadListProps,
+  UrlLink,
+  experimental_Icon as Icon,
   useRealtime,
   useRpc,
+  useSdk,
 } from "@get-bb/plugin-sdk/app";
+import { z } from "zod";
 import type { rpcContract } from "./server";
 import {
   appearanceSchema,
@@ -777,6 +781,92 @@ function SortableListItem({
     >
       {children}
     </div>
+  );
+}
+
+// Sages (the Sages plugin) listed above Pinned. They live in another plugin,
+// so they are read through its RPC: once when the sidebar mounts, and again
+// when Refresh sages is pressed in this plugin's settings.
+const sageListSchema = z.object({
+  sages: z.array(z.looseObject({ id: z.string(), name: z.string() })),
+});
+type SageRow = z.infer<typeof sageListSchema>["sages"][number];
+
+function useSages(): SageRow[] {
+  const sdk = useSdk();
+  const [sages, setSages] = useState<SageRow[]>([]);
+  const load = useCallback(() => {
+    sdk.plugins
+      .callRpc({
+        pluginId: "sages",
+        method: "sages_list",
+        input: null,
+        outputSchema: sageListSchema,
+      })
+      // Without the Sages plugin the section stays empty and hidden.
+      .then(
+        (result) => setSages(result.sages),
+        () => setSages([]),
+      );
+  }, [sdk]);
+  useEffect(load, [load]);
+  useRealtime("sages-refresh", load);
+  return sages;
+}
+
+/** The app's current path, kept current across in-app navigation. */
+function usePathname(): string {
+  const [pathname, setPathname] = useState(window.location.pathname);
+  useEffect(() => {
+    const navigation = (window as { navigation?: EventTarget }).navigation;
+    const update = () =>
+      setTimeout(() => setPathname(window.location.pathname), 0);
+    navigation?.addEventListener("navigate", update);
+    window.addEventListener("popstate", update);
+    return () => {
+      navigation?.removeEventListener("navigate", update);
+      window.removeEventListener("popstate", update);
+    };
+  }, []);
+  return pathname;
+}
+
+function SagesSection({ onNavigate }: { onNavigate: () => void }) {
+  const sages = useSages();
+  const pathname = usePathname();
+  if (sages.length === 0) return null;
+  return (
+    <section>
+      <div className="mx-2 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+        Sages
+      </div>
+      <div className="space-y-1">
+        {sages.map((sage) => {
+          const path = `/plugins/sages/sages/${sage.id}`;
+          const active = pathname === path;
+          return (
+            <UrlLink
+              key={sage.id}
+              href={new URL(path, window.location.origin).href}
+              aria-current={active ? "page" : undefined}
+              onClick={onNavigate}
+              // Tinted with the theme's primary color so sages read as their
+              // own kind of row, apart from threads.
+              className={`mx-2 flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                active
+                  ? "border-primary/40 bg-primary/15 text-foreground"
+                  : "border-primary/15 bg-primary/5 hover:border-primary/30 hover:bg-primary/10"
+              }`}
+            >
+              <Icon name="Sparkles" className="size-4 shrink-0 text-primary" />
+              <span className="min-w-0 flex-1 truncate font-medium">
+                {sage.name}
+              </span>
+            </UrlLink>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -1525,6 +1615,7 @@ function SidebarThreadList({
   return (
     <AppearanceContext.Provider value={appearance}>
       <div className="space-y-2 py-1">
+        <SagesSection onNavigate={onNavigate} />
         {pinnedThreads.length ? (
           <PinnedThreadsSection
             activeThreadId={activeThreadId}
@@ -1744,6 +1835,20 @@ function AppearanceSettings() {
       </div>
 
       <div className="flex justify-end gap-2">
+        <Button
+          className="mr-auto"
+          onClick={() =>
+            void rpc.call("refreshSages", {}).then(
+              () => toast.success("Sages refreshed"),
+              () => toast.error("Couldn’t refresh sages"),
+            )
+          }
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Refresh sages
+        </Button>
         <Button disabled={saving} onClick={() => void reset()} size="sm" type="button" variant="outline">
           Reset
         </Button>
