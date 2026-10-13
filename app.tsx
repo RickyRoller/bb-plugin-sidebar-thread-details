@@ -832,40 +832,98 @@ function usePathname(): string {
 }
 
 function SagesSection({ onNavigate }: { onNavigate: () => void }) {
-  const sages = useSages();
+  const sdk = useSdk();
+  const loaded = useSages();
   const pathname = usePathname();
+  // Shown order: the loaded order until a drag reorders it.
+  const [order, setOrder] = useState<string[] | null>(null);
+  useEffect(() => setOrder(null), [loaded]);
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 200, tolerance: 6 },
+    }),
+  );
+  const byId = new Map(loaded.map((sage) => [sage.id, sage]));
+  const sages =
+    order === null
+      ? loaded
+      : order.flatMap((id) => {
+          const sage = byId.get(id);
+          return sage === undefined ? [] : [sage];
+        });
   if (sages.length === 0) return null;
+
+  const reorder = async ({ active, over }: DragEndEvent) => {
+    if (over === null || active.id === over.id) return;
+    const ids = sages.map((sage) => sage.id);
+    const next = arrayMove(
+      ids,
+      ids.indexOf(String(active.id)),
+      ids.indexOf(String(over.id)),
+    );
+    setOrder(next);
+    try {
+      await sdk.plugins.callRpc({
+        pluginId: "sages",
+        method: "sages_reorder",
+        input: { ids: next },
+        outputSchema: z.object({ ids: z.array(z.string()) }),
+      });
+    } catch {
+      setOrder(null);
+      toast.error("Couldn’t reorder sages");
+    }
+  };
+
   return (
     <section>
       <div className="mx-2 px-2.5 py-1 text-xs font-medium text-muted-foreground">
         Sages
       </div>
-      <div className="space-y-1">
-        {sages.map((sage) => {
-          const path = `/plugins/sages/sages/${sage.id}`;
-          const active = pathname === path;
-          return (
-            <UrlLink
-              key={sage.id}
-              href={new URL(path, window.location.origin).href}
-              aria-current={active ? "page" : undefined}
-              onClick={onNavigate}
-              // Tinted with the theme's primary color so sages read as their
-              // own kind of row, apart from threads.
-              className={`mx-2 flex min-w-0 items-center gap-2 rounded-lg border px-2.5 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-                active
-                  ? "border-primary/40 bg-primary/15 text-foreground"
-                  : "border-primary/15 bg-primary/5 hover:border-primary/30 hover:bg-primary/10"
-              }`}
-            >
-              <Icon name="Sparkles" className="size-4 shrink-0 text-primary" />
-              <span className="min-w-0 flex-1 truncate font-medium">
-                {sage.name}
-              </span>
-            </UrlLink>
-          );
-        })}
-      </div>
+      <DndContext
+        collisionDetection={closestCenter}
+        onDragEnd={(event) => void reorder(event)}
+        sensors={sensors}
+      >
+        <SortableContext
+          items={sages.map((sage) => sage.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="space-y-0.5">
+            {sages.map((sage) => {
+              const path = `/plugins/sages/sages/${sage.id}`;
+              const active = pathname === path;
+              return (
+                <SortableListItem
+                  disabled={sages.length < 2}
+                  id={sage.id}
+                  key={sage.id}
+                >
+                  <UrlLink
+                    href={new URL(path, window.location.origin).href}
+                    aria-current={active ? "page" : undefined}
+                    onClick={onNavigate}
+                    className={`mx-2 flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                      active
+                        ? "bg-accent text-accent-foreground"
+                        : "hover:bg-accent/60"
+                    }`}
+                  >
+                    <Icon
+                      name="Sparkles"
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium">
+                      {sage.name}
+                    </span>
+                  </UrlLink>
+                </SortableListItem>
+              );
+            })}
+          </div>
+        </SortableContext>
+      </DndContext>
     </section>
   );
 }
