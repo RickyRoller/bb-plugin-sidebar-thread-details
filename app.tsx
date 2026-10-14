@@ -131,7 +131,12 @@ function PinIcon({ filled = false }: { filled?: boolean }) {
 
 function MoreIcon() {
   return (
-    <svg aria-hidden="true" className="size-4" viewBox="0 0 16 16" fill="currentColor">
+    <svg
+      aria-hidden="true"
+      className="size-4"
+      viewBox="0 0 16 16"
+      fill="currentColor"
+    >
       <circle cx="3" cy="8" r="1.25" />
       <circle cx="8" cy="8" r="1.25" />
       <circle cx="13" cy="8" r="1.25" />
@@ -179,7 +184,9 @@ const COLLAPSED_PROJECTS_KEY = "sidebar-thread-details:collapsed-projects";
 
 function loadCollapsedProjects(): Set<string> {
   try {
-    const stored = JSON.parse(localStorage.getItem(COLLAPSED_PROJECTS_KEY) ?? "[]");
+    const stored = JSON.parse(
+      localStorage.getItem(COLLAPSED_PROJECTS_KEY) ?? "[]",
+    );
     return new Set(Array.isArray(stored) ? stored : []);
   } catch {
     return new Set();
@@ -317,7 +324,8 @@ function ThreadRow({
   const branchName = thread.environment?.branchName;
   const isChild = thread.parentThreadId !== null;
   const isRenaming = renameTitle !== null;
-  const hasVisibleIndicator = isThreadWorking(thread) || (!isChild && thread.indicator !== "none");
+  const hasVisibleIndicator =
+    isThreadWorking(thread) || (!isChild && thread.indicator !== "none");
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -370,9 +378,7 @@ function ThreadRow({
     <div
       className={`group/thread relative mr-2 rounded-lg transition-colors ${
         nested ? "" : "ml-2"
-      } ${
-        active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
-      }`}
+      } ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
       style={nested ? { marginLeft: appearance.threadIndent } : undefined}
     >
       <a
@@ -466,10 +472,24 @@ function ThreadRow({
                 fill="none"
                 viewBox="0 0 16 16"
               >
-                <circle className="opacity-25" cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="2" />
-                <path d="M14 8a6 6 0 0 0-6-6" stroke="currentColor" strokeLinecap="round" strokeWidth="2" />
+                <circle
+                  className="opacity-25"
+                  cx="8"
+                  cy="8"
+                  r="6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                />
+                <path
+                  d="M14 8a6 6 0 0 0-6-6"
+                  stroke="currentColor"
+                  strokeLinecap="round"
+                  strokeWidth="2"
+                />
               </svg>
-              <span className="text-primary">{childrenSummary.workingCount} working</span>
+              <span className="text-primary">
+                {childrenSummary.workingCount} working
+              </span>
             </>
           ) : null}
           {!childrenSummary.expanded && childrenSummary.hasActiveChild ? (
@@ -515,7 +535,9 @@ function ThreadRow({
               className="absolute right-0 top-8 z-50 min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
               role="menu"
             >
-              <MenuButton onClick={() => openThread(true)}>Open in split</MenuButton>
+              <MenuButton onClick={() => openThread(true)}>
+                Open in split
+              </MenuButton>
               <MenuButton
                 onClick={() => {
                   setMenuOpen(false);
@@ -724,7 +746,8 @@ function ChildThreadList({
   const [showAll, setShowAll] = useState(false);
   if (!expanded) return null;
 
-  const visibleChildren = limitThreads && !showAll ? children.slice(0, 5) : children;
+  const visibleChildren =
+    limitThreads && !showAll ? children.slice(0, 5) : children;
   const hiddenCount = children.length - visibleChildren.length;
   return (
     <div className="ml-7 mr-2 border-l border-border/70 pl-1">
@@ -758,13 +781,8 @@ function SortableListItem({
   disabled: boolean;
   id: string;
 }) {
-  const {
-    isDragging,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-  } = useSortable({ id, disabled });
+  const { isDragging, listeners, setNodeRef, transform, transition } =
+    useSortable({ id, disabled });
 
   return (
     <div
@@ -784,11 +802,19 @@ function SortableListItem({
   );
 }
 
-// Sages (the Sages plugin) listed above Pinned. They live in another plugin,
-// so they are read through its RPC: once when the sidebar mounts, and again
-// when Refresh sages is pressed in this plugin's settings.
+// Sages (the Sages plugin) listed above Pinned, each with its open acolytes
+// under it. They live in another plugin, so they are read through its RPC:
+// once when the sidebar mounts, again when the Sages plugin opens or closes a
+// acolyte, and when Refresh sages is pressed in this plugin's settings.
 const sageListSchema = z.object({
-  sages: z.array(z.looseObject({ id: z.string(), name: z.string() })),
+  sages: z.array(
+    z.looseObject({
+      id: z.string(),
+      name: z.string(),
+      parentId: z.string().nullish(),
+      archivedAt: z.string().nullish(),
+    }),
+  ),
 });
 type SageRow = z.infer<typeof sageListSchema>["sages"][number];
 
@@ -844,10 +870,11 @@ function SagesSection({ onNavigate }: { onNavigate: () => void }) {
       activationConstraint: { delay: 200, tolerance: 6 },
     }),
   );
-  const byId = new Map(loaded.map((sage) => [sage.id, sage]));
+  const roots = loaded.filter((sage) => sage.parentId == null);
+  const byId = new Map(roots.map((sage) => [sage.id, sage]));
   const sages =
     order === null
-      ? loaded
+      ? roots
       : order.flatMap((id) => {
           const sage = byId.get(id);
           return sage === undefined ? [] : [sage];
@@ -918,6 +945,39 @@ function SagesSection({ onNavigate }: { onNavigate: () => void }) {
                       {sage.name}
                     </span>
                   </UrlLink>
+                  {loaded
+                    .filter(
+                      (acolyte) =>
+                        acolyte.parentId === sage.id &&
+                        acolyte.archivedAt == null,
+                    )
+                    .map((acolyte) => {
+                      const acolytePath = `/plugins/sages/sages/${acolyte.id}`;
+                      const acolyteActive = pathname === acolytePath;
+                      return (
+                        <UrlLink
+                          key={acolyte.id}
+                          href={
+                            new URL(acolytePath, window.location.origin).href
+                          }
+                          aria-current={acolyteActive ? "page" : undefined}
+                          onClick={onNavigate}
+                          className={`mx-2 mt-0.5 flex min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+                            acolyteActive
+                              ? "bg-accent text-accent-foreground"
+                              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                          }`}
+                        >
+                          <Icon
+                            name="GitBranch"
+                            className="size-3.5 shrink-0"
+                          />
+                          <span className="min-w-0 flex-1 truncate">
+                            {acolyte.name}
+                          </span>
+                        </UrlLink>
+                      );
+                    })}
                 </SortableListItem>
               );
             })}
@@ -1038,50 +1098,58 @@ function PinnedThreadsSection({
           strategy={verticalListSortingStrategy}
         >
           <div className="space-y-0.5">
-          {orderedRoots.map((thread) => {
-          const children = allThreads.filter(
-            (candidate) => candidate.parentThreadId === thread.id,
-          );
-          const expanded = expandAll || expandedParents.has(thread.id);
-          const workingCount = children.filter(isThreadWorking).length;
-          return (
-            <SortableListItem
-              disabled={orderedRoots.length < 2}
-              id={thread.id}
-              key={thread.id}
-            >
-              <ThreadRow
-                active={thread.id === activeThreadId}
-                childrenSummary={children.length ? {
-                  count: children.length,
-                  workingCount,
-                  expanded,
-                  hasActiveChild: children.some((child) => child.id === activeThreadId),
-                  onToggle: () => {
-                    setExpandedParents((current) => {
-                      const next = new Set(current);
-                      if (next.has(thread.id)) next.delete(thread.id);
-                      else next.add(thread.id);
-                      return next;
-                    });
-                  },
-                } : undefined}
-                onNavigate={onNavigate}
-                projectName={projectNames.get(thread.projectId) ?? "Unknown project"}
-                thread={thread}
-              />
-              {children.length ? (
-                <ChildThreadList
-                  activeThreadId={activeThreadId}
-                  children={children}
-                  expanded={expanded}
-                  limitThreads={!expandAll}
-                  onNavigate={onNavigate}
-                />
-              ) : null}
-            </SortableListItem>
-          );
-          })}
+            {orderedRoots.map((thread) => {
+              const children = allThreads.filter(
+                (candidate) => candidate.parentThreadId === thread.id,
+              );
+              const expanded = expandAll || expandedParents.has(thread.id);
+              const workingCount = children.filter(isThreadWorking).length;
+              return (
+                <SortableListItem
+                  disabled={orderedRoots.length < 2}
+                  id={thread.id}
+                  key={thread.id}
+                >
+                  <ThreadRow
+                    active={thread.id === activeThreadId}
+                    childrenSummary={
+                      children.length
+                        ? {
+                            count: children.length,
+                            workingCount,
+                            expanded,
+                            hasActiveChild: children.some(
+                              (child) => child.id === activeThreadId,
+                            ),
+                            onToggle: () => {
+                              setExpandedParents((current) => {
+                                const next = new Set(current);
+                                if (next.has(thread.id)) next.delete(thread.id);
+                                else next.add(thread.id);
+                                return next;
+                              });
+                            },
+                          }
+                        : undefined
+                    }
+                    onNavigate={onNavigate}
+                    projectName={
+                      projectNames.get(thread.projectId) ?? "Unknown project"
+                    }
+                    thread={thread}
+                  />
+                  {children.length ? (
+                    <ChildThreadList
+                      activeThreadId={activeThreadId}
+                      children={children}
+                      expanded={expanded}
+                      limitThreads={!expandAll}
+                      onNavigate={onNavigate}
+                    />
+                  ) : null}
+                </SortableListItem>
+              );
+            })}
           </div>
         </SortableContext>
       </DndContext>
@@ -1162,7 +1230,8 @@ function CreateProjectDialog({
         <DialogHeader>
           <DialogTitle>Add project</DialogTitle>
           <DialogDescription>
-            Choose the machine that contains the project, then select its folder.
+            Choose the machine that contains the project, then select its
+            folder.
           </DialogDescription>
         </DialogHeader>
         <form className="space-y-4" onSubmit={handleChoose}>
@@ -1176,7 +1245,9 @@ function CreateProjectDialog({
                 value={hostId}
               >
                 {hosts.map((host) => (
-                  <option key={host.id} value={host.id}>{host.name}</option>
+                  <option key={host.id} value={host.id}>
+                    {host.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -1196,10 +1267,7 @@ function CreateProjectDialog({
             >
               Cancel
             </Button>
-            <Button
-              disabled={busy || !hostId}
-              type="submit"
-            >
+            <Button disabled={busy || !hostId} type="submit">
               {busy ? "Opening…" : "Choose project folder"}
             </Button>
           </DialogFooter>
@@ -1275,7 +1343,9 @@ function ProjectGroup({
   }, [menuOpen]);
 
   const openProjectSettings = () => {
-    window.location.assign(`/projects/${encodeURIComponent(group.id)}/settings`);
+    window.location.assign(
+      `/projects/${encodeURIComponent(group.id)}/settings`,
+    );
   };
 
   return (
@@ -1325,16 +1395,23 @@ function ProjectGroup({
                 className="absolute right-0 top-8 z-50 min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
                 role="menu"
               >
-                <MenuButton onClick={openProjectSettings}>Project settings</MenuButton>
+                <MenuButton onClick={openProjectSettings}>
+                  Project settings
+                </MenuButton>
                 <MenuButton
                   onClick={() => {
                     setMenuOpen(false);
-                    toast.promise(rpc.call("mainAndSync", { projectId: group.id }), {
-                      loading: "Switching to main and pulling…",
-                      success: "Main is up to date",
-                      error: (error) =>
-                        error instanceof Error ? error.message : "Couldn’t sync main",
-                    });
+                    toast.promise(
+                      rpc.call("mainAndSync", { projectId: group.id }),
+                      {
+                        loading: "Switching to main and pulling…",
+                        success: "Main is up to date",
+                        error: (error) =>
+                          error instanceof Error
+                            ? error.message
+                            : "Couldn’t sync main",
+                      },
+                    );
                   }}
                 >
                   Main &amp; Sync
@@ -1343,15 +1420,22 @@ function ProjectGroup({
                 <MenuButton
                   onClick={() => {
                     setMenuOpen(false);
-                    const name = window.prompt("Rename project", group.name)?.trim();
+                    const name = window
+                      .prompt("Rename project", group.name)
+                      ?.trim();
                     if (name && name !== group.name) {
-                      void rpc.call("renameProject", { projectId: group.id, name });
+                      void rpc.call("renameProject", {
+                        projectId: group.id,
+                        name,
+                      });
                     }
                   }}
                 >
                   Rename
                 </MenuButton>
-                <MenuButton onClick={openProjectSettings}>Add local path…</MenuButton>
+                <MenuButton onClick={openProjectSettings}>
+                  Add local path…
+                </MenuButton>
                 <MenuButton
                   destructive
                   onClick={() => {
@@ -1402,20 +1486,26 @@ function ProjectGroup({
               <div className="space-y-px" key={thread.id}>
                 <ThreadRow
                   active={thread.id === activeThreadId}
-                  childrenSummary={children.length ? {
-                    count: children.length,
-                    workingCount,
-                    expanded,
-                    hasActiveChild: children.some((child) => child.id === activeThreadId),
-                    onToggle: () => {
-                      setExpandedParents((current) => {
-                        const next = new Set(current);
-                        if (next.has(thread.id)) next.delete(thread.id);
-                        else next.add(thread.id);
-                        return next;
-                      });
-                    },
-                  } : undefined}
+                  childrenSummary={
+                    children.length
+                      ? {
+                          count: children.length,
+                          workingCount,
+                          expanded,
+                          hasActiveChild: children.some(
+                            (child) => child.id === activeThreadId,
+                          ),
+                          onToggle: () => {
+                            setExpandedParents((current) => {
+                              const next = new Set(current);
+                              if (next.has(thread.id)) next.delete(thread.id);
+                              else next.add(thread.id);
+                              return next;
+                            });
+                          },
+                        }
+                      : undefined
+                  }
                   nested
                   onNavigate={onNavigate}
                   projectName={group.name}
@@ -1459,11 +1549,15 @@ function SidebarThreadList({
   const rpc = useRpc<typeof rpcContract>();
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [createProjectBusy, setCreateProjectBusy] = useState(false);
-  const [createProjectError, setCreateProjectError] = useState<string | null>(null);
-  const [projectCreationHosts, setProjectCreationHosts] = useState<ProjectCreationHost[]>([]);
-  const [projectBranches, setProjectBranches] = useState<Record<string, string | null>>(
-    {},
+  const [createProjectError, setCreateProjectError] = useState<string | null>(
+    null,
   );
+  const [projectCreationHosts, setProjectCreationHosts] = useState<
+    ProjectCreationHost[]
+  >([]);
+  const [projectBranches, setProjectBranches] = useState<
+    Record<string, string | null>
+  >({});
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(
     loadCollapsedProjects,
   );
@@ -1526,16 +1620,23 @@ function SidebarThreadList({
   }, [projectIdsKey, rpc]);
   const visibleThreads = useMemo(() => {
     if (!query) return threads;
-    const matchedIds = new Set(threads.filter((thread) => {
-      const project = projectNames.get(thread.projectId) ?? "";
-      const title = thread.title ?? thread.titleFallback ?? "";
-      const branch = thread.environment?.branchName ?? "";
-      return `${title} ${project} ${branch}`.toLocaleLowerCase().includes(query);
-    }).map((thread) => thread.id));
+    const matchedIds = new Set(
+      threads
+        .filter((thread) => {
+          const project = projectNames.get(thread.projectId) ?? "";
+          const title = thread.title ?? thread.titleFallback ?? "";
+          const branch = thread.environment?.branchName ?? "";
+          return `${title} ${project} ${branch}`
+            .toLocaleLowerCase()
+            .includes(query);
+        })
+        .map((thread) => thread.id),
+    );
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
     for (const thread of threads) {
       if (!matchedIds.has(thread.id) || !thread.parentThreadId) continue;
-      if (byId.has(thread.parentThreadId)) matchedIds.add(thread.parentThreadId);
+      if (byId.has(thread.parentThreadId))
+        matchedIds.add(thread.parentThreadId);
     }
     return threads.filter((thread) => matchedIds.has(thread.id));
   }, [projectNames, query, threads]);
@@ -1556,12 +1657,14 @@ function SidebarThreadList({
         (thread) => thread.projectId === project.id,
       );
       if (query && projectThreads.length === 0) return [];
-      return [{
-        id: project.id,
-        name: project.name,
-        branchName: projectBranches[project.id] ?? null,
-        threads: projectThreads,
-      }];
+      return [
+        {
+          id: project.id,
+          name: project.name,
+          branchName: projectBranches[project.id] ?? null,
+          threads: projectThreads,
+        },
+      ];
     });
     const unknownThreads = unpinned.filter(
       (thread) => !knownProjectIds.has(thread.projectId),
@@ -1576,10 +1679,14 @@ function SidebarThreadList({
     }
     return groups;
   }, [pinnedThreads, projectBranches, projects, query, visibleThreads]);
-  const projectGroupsById = new Map(projectGroups.map((group) => [group.id, group]));
+  const projectGroupsById = new Map(
+    projectGroups.map((group) => [group.id, group]),
+  );
   const orderedProjectGroups = orderedProjectIds
     .flatMap((id) => projectGroupsById.get(id) ?? [])
-    .concat(projectGroups.filter((group) => !orderedProjectIds.includes(group.id)));
+    .concat(
+      projectGroups.filter((group) => !orderedProjectIds.includes(group.id)),
+    );
 
   useEffect(() => {
     setOrderedProjectIds(projects.map((project) => project.id));
@@ -1590,7 +1697,9 @@ function SidebarThreadList({
     const overId = event.over ? String(event.over.id) : null;
     if (!overId || activeId === overId) return;
 
-    const sortableGroups = orderedProjectGroups.filter((group) => group.id !== "unknown");
+    const sortableGroups = orderedProjectGroups.filter(
+      (group) => group.id !== "unknown",
+    );
     const oldIndex = sortableGroups.findIndex((group) => group.id === activeId);
     const newIndex = sortableGroups.findIndex((group) => group.id === overId);
     if (oldIndex === -1 || newIndex === -1) return;
@@ -1665,10 +1774,18 @@ function SidebarThreadList({
   };
 
   if (status === "loading") {
-    return <div className="px-4 py-6 text-sm text-muted-foreground">Loading threads…</div>;
+    return (
+      <div className="px-4 py-6 text-sm text-muted-foreground">
+        Loading threads…
+      </div>
+    );
   }
   if (status === "error") {
-    return <div className="px-4 py-6 text-sm text-destructive">Couldn’t load threads.</div>;
+    return (
+      <div className="px-4 py-6 text-sm text-destructive">
+        Couldn’t load threads.
+      </div>
+    );
   }
   return (
     <AppearanceContext.Provider value={appearance}>
@@ -1704,7 +1821,11 @@ function SidebarThreadList({
               <div className="mt-1 space-y-2">
                 {orderedProjectGroups.map((group) => (
                   <SortableListItem
-                    disabled={Boolean(query) || group.id === "unknown" || projects.length < 2}
+                    disabled={
+                      Boolean(query) ||
+                      group.id === "unknown" ||
+                      projects.length < 2
+                    }
                     id={group.id}
                     key={group.id}
                   >
@@ -1750,10 +1871,7 @@ function SidebarThreadList({
 }
 
 type ColorKey =
-  | "projectColor"
-  | "branchColor"
-  | "threadColor"
-  | "childThreadColor";
+  "projectColor" | "branchColor" | "threadColor" | "childThreadColor";
 
 const colorFields: readonly { key: ColorKey; label: string }[] = [
   { key: "projectColor", label: "Project name" },
@@ -1778,7 +1896,9 @@ function AppearanceSettings() {
       setDraft(await rpc.call("updateAppearance", parsed.data));
       toast.success("Sidebar appearance saved");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Couldn’t save appearance");
+      toast.error(
+        error instanceof Error ? error.message : "Couldn’t save appearance",
+      );
     } finally {
       setSaving(false);
     }
@@ -1791,7 +1911,9 @@ function AppearanceSettings() {
       setDraft(await rpc.call("resetAppearance", {}));
       toast.success("Sidebar appearance reset");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Couldn’t reset appearance");
+      toast.error(
+        error instanceof Error ? error.message : "Couldn’t reset appearance",
+      );
     } finally {
       setSaving(false);
     }
@@ -1809,14 +1931,22 @@ function AppearanceSettings() {
         {colorFields.map(({ key, label }) => {
           const valid = /^$|^#[0-9a-fA-F]{6}$/.test(draft[key]);
           return (
-            <label className="grid gap-2 sm:grid-cols-[1fr_auto_8rem] sm:items-center" key={key}>
-              <span className="text-sm font-medium text-foreground">{label}</span>
+            <label
+              className="grid gap-2 sm:grid-cols-[1fr_auto_8rem] sm:items-center"
+              key={key}
+            >
+              <span className="text-sm font-medium text-foreground">
+                {label}
+              </span>
               <input
                 aria-label={`${label} color picker`}
                 className="h-8 w-10 cursor-pointer rounded border border-input bg-transparent p-1"
                 key={valid && draft[key] ? "color" : "theme"}
                 onChange={(event) =>
-                  setDraft((current) => ({ ...current, [key]: event.target.value }))
+                  setDraft((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }))
                 }
                 type="color"
                 value={valid && draft[key] ? draft[key] : undefined}
@@ -1826,7 +1956,10 @@ function AppearanceSettings() {
                 className="h-8 rounded-md border border-input bg-background px-2 font-mono text-xs text-foreground outline-none focus:border-ring aria-[invalid=true]:border-destructive"
                 maxLength={7}
                 onChange={(event) =>
-                  setDraft((current) => ({ ...current, [key]: event.target.value }))
+                  setDraft((current) => ({
+                    ...current,
+                    [key]: event.target.value,
+                  }))
                 }
                 placeholder="Use theme"
                 spellCheck={false}
@@ -1839,8 +1972,12 @@ function AppearanceSettings() {
 
       <label className="grid gap-2 sm:grid-cols-[1fr_12rem] sm:items-center">
         <span>
-          <span className="block text-sm font-medium text-foreground">Thread indentation</span>
-          <span className="text-xs text-muted-foreground">{draft.threadIndent}px from the left edge</span>
+          <span className="block text-sm font-medium text-foreground">
+            Thread indentation
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {draft.threadIndent}px from the left edge
+          </span>
         </span>
         <input
           aria-label="Thread indentation"
@@ -1861,7 +1998,9 @@ function AppearanceSettings() {
       <div className="rounded-md bg-muted/50 p-3">
         <div className="mx-2 flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium">
           <ChevronIcon collapsed={false} />
-          <span style={{ color: draft.projectColor || undefined }}>Example project</span>
+          <span style={{ color: draft.projectColor || undefined }}>
+            Example project
+          </span>
           <span
             className="flex items-center gap-1 opacity-75"
             style={{ color: draft.branchColor || undefined }}
@@ -1907,7 +2046,13 @@ function AppearanceSettings() {
         >
           Refresh sages
         </Button>
-        <Button disabled={saving} onClick={() => void reset()} size="sm" type="button" variant="outline">
+        <Button
+          disabled={saving}
+          onClick={() => void reset()}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           Reset
         </Button>
         <Button disabled={saving || !parsed.success} size="sm" type="submit">
@@ -1922,7 +2067,8 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "appearance",
     title: "Sidebar appearance",
-    description: "Tune label colors and thread indentation. Empty colors use the BB theme.",
+    description:
+      "Tune label colors and thread indentation. Empty colors use the BB theme.",
     component: AppearanceSettings,
   });
   app.slots.experimental_threadList({
