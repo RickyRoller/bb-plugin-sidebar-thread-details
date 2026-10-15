@@ -4,6 +4,7 @@ import { hostContract } from "./contract.js";
 import { appearanceSchema, defaultAppearance } from "./appearance.js";
 
 export const rpcContract = defineRpcContract({
+  refreshEnvoys: { input: z.object({}).strict(), output: z.object({ ok: z.literal(true) }) },
   projectBranches: {
     input: z.object({ projectIds: z.array(z.string()) }),
     output: z.record(z.string(), z.string().nullable()),
@@ -105,6 +106,10 @@ export default function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
 
   bb.rpc.register(rpcContract, {
+    async refreshEnvoys() {
+      bb.realtime.publish("envoys-refresh", {});
+      return { ok: true as const };
+    },
     async projectBranches({ projectIds }) {
       const entries = await Promise.all(
         projectIds.map(async (projectId) => {

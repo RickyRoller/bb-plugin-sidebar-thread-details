@@ -4,7 +4,7 @@
   "type": "module",
   "engines": {
     "bb": ">=0.39",
-    "bbPluginSdk": ">=0.4.47"
+    "bbPluginSdk": ">=0.6.37"
   },
   "bb": {
     "name": "Sidebar Thread Details",
@@ -26,7 +26,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.15",
+    "@get-bb/plugin-sdk": "0.6.37",
     "@pierre/diffs": "^1.2.9",
     "@radix-ui/react-alert-dialog": "^1.1.19",
     "@radix-ui/react-context-menu": "^2.3.3",
@@ -38,6 +38,7 @@
     "@radix-ui/react-popover": "^1.1.19",
     "@radix-ui/react-select": "^2.3.3",
     "@radix-ui/react-tooltip": "^1.2.12",
+    "@testing-library/react": "16.3.3",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
@@ -46,9 +47,15 @@
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "hono": "^4.11.9",
+    "jsdom": "29.1.1",
     "sonner": "^1.7.4",
     "tailwind-merge": "^3.4.0",
+    "tsx": "4.23.15",
     "typescript": "^5.7.0",
     "vaul": "^1.1.2"
+  },
+  "scripts": {
+    "test": "node --import tsx --test envoys-sidebar.test.mjs",
+    "typecheck": "tsc --noEmit"
   }
 }
