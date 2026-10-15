@@ -25,7 +25,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import {
   definePluginApp,
-  experimental_useSidebarThreadActions,
+  experimental_ThreadActionsMenu as ThreadActionsMenu,
+  useBbNavigate,
   experimental_useSidebarThreadSplit,
   experimental_useSidebarThreads,
   type PluginSidebarThread,
@@ -55,6 +56,70 @@ import {
 } from "./components/ui/dialog";
 
 const AppearanceContext = createContext(defaultAppearance);
+const EnvoyContext = createContext(
+  new Map<
+    string,
+    { issue: { key: string; url: string } | null; lifecycle: string }
+  >(),
+);
+const envoySummarySchema = z.object({
+  envoys: z.array(
+    z.object({
+      threadId: z.string().nullable(),
+      lifecycle: z.string(),
+      issue: z.object({ key: z.string(), url: z.string() }).nullable(),
+    }),
+  ),
+});
+function useEnvoySummaries(threadIds: string[]) {
+  const sdk = useSdk();
+  const [envoys, setEnvoys] = useState(
+    new Map<
+      string,
+      { issue: { key: string; url: string } | null; lifecycle: string }
+    >(),
+  );
+  const idsKey = [...threadIds].sort().join("\u0000");
+  const generation = useRef(0);
+  const refresh = useCallback(() => {
+    const current = ++generation.current;
+    const ids = idsKey ? idsKey.split("\u0000") : [];
+    if (!ids.length) {
+      setEnvoys(new Map());
+      return;
+    }
+    // One lookup for all visible rows, never a request per thread.
+    Promise.all(
+      Array.from({ length: Math.ceil(ids.length / 1000) }, (_, i) =>
+        sdk.plugins.callRpc({
+          pluginId: "sages",
+          method: "envoys_summaries",
+          input: { threadIds: ids.slice(i * 1000, (i + 1) * 1000) },
+          outputSchema: envoySummarySchema,
+        }),
+      ),
+    ).then(
+      (pages) => {
+        if (current === generation.current)
+          setEnvoys(
+            new Map(
+              pages.flatMap((page) =>
+                page.envoys
+                  .filter((e) => e.threadId)
+                  .map((e) => [e.threadId!, e] as const),
+              ),
+            ),
+          );
+      },
+      () => {
+        if (current === generation.current) setEnvoys(new Map());
+      },
+    );
+  }, [sdk, idsKey]);
+  useEffect(refresh, [refresh]);
+  useRealtime("envoys-refresh", refresh);
+  return envoys;
+}
 
 function useAppearance() {
   const rpc = useRpc<typeof rpcContract>();
@@ -81,14 +146,6 @@ function useAppearance() {
   }, [rpc]);
 
   return appearance;
-}
-
-async function copyThreadId(threadId: string) {
-  try {
-    await navigator.clipboard.writeText(threadId);
-  } catch {
-    window.prompt("Copy thread ID", threadId);
-  }
 }
 
 function BranchIcon() {
@@ -312,13 +369,13 @@ function ThreadRow({
   onNavigate,
 }: ThreadRowProps) {
   const appearance = useContext(AppearanceContext);
-  const actions = experimental_useSidebarThreadActions();
+  const envoy = useContext(EnvoyContext).get(thread.id);
+  const sdk = useSdk();
+  const navigate = useBbNavigate();
   const { splitProps } = experimental_useSidebarThreadSplit(thread.id);
-  const [menuOpen, setMenuOpen] = useState(false);
   const [pinPending, setPinPending] = useState(false);
   const [renamePending, setRenamePending] = useState(false);
   const [renameTitle, setRenameTitle] = useState<string | null>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
   const title = thread.title ?? thread.titleFallback ?? "Untitled thread";
   const branchName = thread.environment?.branchName;
@@ -326,15 +383,6 @@ function ThreadRow({
   const isRenaming = renameTitle !== null;
   const hasVisibleIndicator =
     isThreadWorking(thread) || (!isChild && thread.indicator !== "none");
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [menuOpen]);
 
   useEffect(() => {
     if (!isRenaming) return;
@@ -346,14 +394,16 @@ function ThreadRow({
     if (pinPending) return;
     setPinPending(true);
     try {
-      await actions.setPinned(thread.id, !thread.isPinned);
+      await sdk.threads[thread.isPinned ? "unpin" : "pin"]({
+        threadId: thread.id,
+      });
     } finally {
       setPinPending(false);
     }
   };
 
   const openThread = (split = false) => {
-    actions.open(thread.id, split ? { split: true } : undefined);
+    navigate.toThread(thread.id, split ? { split: true } : undefined);
     onNavigate();
   };
 
@@ -367,7 +417,7 @@ function ThreadRow({
 
     setRenamePending(true);
     try {
-      await actions.rename(thread.id, nextTitle);
+      await sdk.threads.update({ threadId: thread.id, title: nextTitle });
       setRenameTitle(null);
     } finally {
       setRenamePending(false);
@@ -381,7 +431,9 @@ function ThreadRow({
       } ${active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"}`}
       style={nested ? { marginLeft: appearance.threadIndent } : undefined}
     >
-      <a
+      <div
+        role="link"
+        tabIndex={0}
         {...splitProps}
         aria-current={active ? "page" : undefined}
         className={`block min-w-0 cursor-pointer px-2.5 outline-none transition-[padding] focus-visible:ring-2 focus-visible:ring-ring group-hover/thread:pr-[4.75rem] group-focus-within/thread:pr-[4.75rem] ${
@@ -389,7 +441,15 @@ function ThreadRow({
         } ${hasVisibleIndicator ? "pr-8" : "pr-2.5"}`}
         data-sidebar-thread-id={thread.id}
         data-sidebar-thread-shortcut-target=""
-        href="#"
+        onKeyDown={(event) => {
+          if (
+            event.target === event.currentTarget &&
+            (event.key === "Enter" || event.key === " ")
+          ) {
+            event.preventDefault();
+            openThread(event.metaKey || event.ctrlKey);
+          }
+        }}
         onClick={(event) => {
           event.preventDefault();
           openThread(event.metaKey || event.ctrlKey);
@@ -427,9 +487,23 @@ function ThreadRow({
               {title}
             </span>
           )}
+          {envoy?.issue ? (
+            <span
+              className="shrink-0"
+              onClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <UrlLink
+                href={envoy.issue.url}
+                className="rounded border border-border px-1 text-[10px] text-muted-foreground"
+              >
+                [{envoy.issue.key}]
+              </UrlLink>
+            </span>
+          ) : null}
         </span>
 
-        {thread.isPinned ? (
+        {thread.isPinned || envoy ? (
           <span
             className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-[11px] leading-4 text-muted-foreground/70"
             title={branchName ? `${projectName} - ${branchName}` : projectName}
@@ -440,7 +514,14 @@ function ThreadRow({
             >
               {projectName}
             </span>
-            {branchName ? (
+            {envoy ? (
+              <span className="truncate">
+                ·{" "}
+                {thread.environment?.isWorktree
+                  ? "BB worktree"
+                  : (thread.environment?.name ?? "Workspace")}
+              </span>
+            ) : branchName ? (
               <span
                 className="flex min-w-0 items-center gap-1"
                 style={{ color: appearance.branchColor || undefined }}
@@ -452,7 +533,7 @@ function ThreadRow({
             ) : null}
           </span>
         ) : null}
-      </a>
+      </div>
 
       {childrenSummary ? (
         <button
@@ -517,80 +598,25 @@ function ThreadRow({
           <PinIcon filled={thread.isPinned} />
         </button>
 
-        <div ref={menuRef}>
-          <button
-            aria-expanded={menuOpen}
-            aria-haspopup="menu"
-            aria-label={`More actions for ${title}`}
-            className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground"
-            onClick={() => setMenuOpen((open) => !open)}
-            title="More actions"
-            type="button"
-          >
-            <MoreIcon />
-          </button>
-
-          {menuOpen ? (
-            <div
-              className="absolute right-0 top-8 z-50 min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-              role="menu"
+        <ThreadActionsMenu
+          thread={{
+            ...thread,
+            environment: thread.environment?.id
+              ? { id: thread.environment.id, path: thread.environment.path }
+              : null,
+          }}
+          requestRename={() => setRenameTitle(title)}
+          trigger={(props) => (
+            <button
+              {...props}
+              aria-label={`More actions for ${title}`}
+              className={`${props.className ?? ""} grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground`}
+              title="More actions"
             >
-              <MenuButton onClick={() => openThread(true)}>
-                Open in split
-              </MenuButton>
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  void copyThreadId(thread.id);
-                }}
-              >
-                Copy thread ID
-              </MenuButton>
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  void togglePin();
-                }}
-              >
-                {thread.isPinned ? "Unpin" : "Pin"}
-              </MenuButton>
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  void actions.setRead(thread.id, thread.isUnread);
-                }}
-              >
-                Mark as {thread.isUnread ? "read" : "unread"}
-              </MenuButton>
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  setRenameTitle(title);
-                }}
-              >
-                Rename
-              </MenuButton>
-              <div className="my-1 h-px bg-border" />
-              <MenuButton
-                onClick={() => {
-                  setMenuOpen(false);
-                  actions.archive(thread.id);
-                }}
-              >
-                Archive
-              </MenuButton>
-              <MenuButton
-                destructive
-                onClick={() => {
-                  setMenuOpen(false);
-                  actions.requestDelete(thread.id);
-                }}
-              >
-                Delete…
-              </MenuButton>
-            </div>
-          ) : null}
-        </div>
+              <MoreIcon />
+            </button>
+          )}
+        />
       </div>
     </div>
   );
@@ -606,24 +632,13 @@ function ChildThreadRow({
   thread: PluginSidebarThread;
 }) {
   const appearance = useContext(AppearanceContext);
-  const actions = experimental_useSidebarThreadActions();
+  const navigate = useBbNavigate();
   const { splitProps } = experimental_useSidebarThreadSplit(thread.id);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
   const title = thread.title ?? thread.titleFallback ?? "Untitled thread";
   const working = isThreadWorking(thread);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", close);
-    return () => document.removeEventListener("mousedown", close);
-  }, [menuOpen]);
-
   const openThread = (split = false) => {
-    actions.open(thread.id, split ? { split: true } : undefined);
+    navigate.toThread(thread.id, split ? { split: true } : undefined);
     onNavigate();
   };
 
@@ -668,63 +683,25 @@ function ChildThreadRow({
         </div>
       ) : null}
 
-      <div
-        className="pointer-events-none absolute right-0 top-0 opacity-0 transition-opacity group-hover/child:pointer-events-auto group-hover/child:opacity-100 group-focus-within/child:pointer-events-auto group-focus-within/child:opacity-100"
-        ref={menuRef}
-      >
-        <button
-          aria-expanded={menuOpen}
-          aria-haspopup="menu"
-          aria-label={`More actions for ${title}`}
-          className="grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground"
-          onClick={() => setMenuOpen((open) => !open)}
-          title="More actions"
-          type="button"
-        >
-          <MoreIcon />
-        </button>
-
-        {menuOpen ? (
-          <div
-            className="absolute right-0 top-6 z-50 min-w-44 rounded-md border bg-popover p-1 text-popover-foreground shadow-md"
-            role="menu"
-          >
-            <MenuButton
-              onClick={() => {
-                setMenuOpen(false);
-                openThread(true);
-              }}
+      <div className="pointer-events-none absolute right-0 top-0 opacity-0 transition-opacity group-hover/child:pointer-events-auto group-hover/child:opacity-100 group-focus-within/child:pointer-events-auto group-focus-within/child:opacity-100">
+        <ThreadActionsMenu
+          thread={{
+            ...thread,
+            environment: thread.environment?.id
+              ? { id: thread.environment.id, path: thread.environment.path }
+              : null,
+          }}
+          trigger={(props) => (
+            <button
+              {...props}
+              aria-label={`More actions for ${title}`}
+              className={`${props.className ?? ""} grid size-6 place-items-center rounded-md text-muted-foreground hover:bg-background hover:text-foreground`}
+              title="More actions"
             >
-              Open in split
-            </MenuButton>
-            <MenuButton
-              onClick={() => {
-                setMenuOpen(false);
-                void copyThreadId(thread.id);
-              }}
-            >
-              Copy thread ID
-            </MenuButton>
-            <div className="my-1 h-px bg-border" />
-            <MenuButton
-              onClick={() => {
-                setMenuOpen(false);
-                actions.archive(thread.id);
-              }}
-            >
-              Archive
-            </MenuButton>
-            <MenuButton
-              destructive
-              onClick={() => {
-                setMenuOpen(false);
-                actions.requestDelete(thread.id);
-              }}
-            >
-              Delete…
-            </MenuButton>
-          </div>
-        ) : null}
+              <MoreIcon />
+            </button>
+          )}
+        />
       </div>
     </div>
   );
@@ -984,6 +961,78 @@ function SagesSection({ onNavigate }: { onNavigate: () => void }) {
           </div>
         </SortableContext>
       </DndContext>
+    </section>
+  );
+}
+
+function EnvoysSection({
+  activeThreadId,
+  onNavigate,
+  roots,
+  threadsByEnvoy,
+  projectNames,
+  expandAll,
+}: {
+  activeThreadId: string | null;
+  onNavigate: () => void;
+  roots: readonly PluginSidebarThread[];
+  threadsByEnvoy: ReadonlyMap<string, PluginSidebarThread[]>;
+  projectNames: ReadonlyMap<string, string>;
+  expandAll: boolean;
+}) {
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  if (!roots.length) return null;
+  return (
+    <section aria-label="Envoys">
+      <div className="mx-2 px-2.5 py-1 text-xs font-medium text-muted-foreground">
+        Envoys
+      </div>
+      <div className="space-y-0.5">
+        {roots.map((thread) => {
+          const children = threadsByEnvoy.get(thread.id) ?? [];
+          const expanded = expandAll || expandedParents.has(thread.id);
+          return (
+            <div className="space-y-px" key={thread.id}>
+              <ThreadRow
+                active={thread.id === activeThreadId}
+                thread={thread}
+                projectName={
+                  projectNames.get(thread.projectId) ?? "Unknown project"
+                }
+                onNavigate={onNavigate}
+                childrenSummary={
+                  children.length
+                    ? {
+                        count: children.length,
+                        workingCount: children.filter(isThreadWorking).length,
+                        expanded,
+                        hasActiveChild: children.some(
+                          (child) => child.id === activeThreadId,
+                        ),
+                        onToggle: () =>
+                          setExpandedParents((current) => {
+                            const next = new Set(current);
+                            if (next.has(thread.id)) next.delete(thread.id);
+                            else next.add(thread.id);
+                            return next;
+                          }),
+                      }
+                    : undefined
+                }
+              />
+              <ChildThreadList
+                activeThreadId={activeThreadId}
+                children={children}
+                expanded={expanded}
+                limitThreads={!expandAll}
+                onNavigate={onNavigate}
+              />
+            </div>
+          );
+        })}
+      </div>
     </section>
   );
 }
@@ -1317,22 +1366,10 @@ function ProjectGroup({
   onToggle: () => void;
 }) {
   const appearance = useContext(AppearanceContext);
-  const actions = experimental_useSidebarThreadActions();
+  const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
-  const [showAll, setShowAll] = useState(false);
-  const [expandedParents, setExpandedParents] = useState<Set<string>>(
-    () => new Set(),
-  );
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-  const threadIds = new Set(group.threads.map((thread) => thread.id));
-  const rootThreads = group.threads.filter(
-    (thread) => !thread.parentThreadId || !threadIds.has(thread.parentThreadId),
-  );
-  const visibleThreads =
-    limitThreads && !showAll ? rootThreads.slice(0, 5) : rootThreads;
-  const hasMore = limitThreads && !showAll && rootThreads.length > 5;
-
   useEffect(() => {
     if (!menuOpen) return;
     const close = (event: MouseEvent) => {
@@ -1341,6 +1378,17 @@ function ProjectGroup({
     document.addEventListener("mousedown", close);
     return () => document.removeEventListener("mousedown", close);
   }, [menuOpen]);
+  const [showAll, setShowAll] = useState(false);
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const threadIds = new Set(group.threads.map((thread) => thread.id));
+  const rootThreads = group.threads.filter(
+    (thread) => !thread.parentThreadId || !threadIds.has(thread.parentThreadId),
+  );
+  const visibleThreads =
+    limitThreads && !showAll ? rootThreads.slice(0, 5) : rootThreads;
+  const hasMore = limitThreads && !showAll && rootThreads.length > 5;
 
   const openProjectSettings = () => {
     window.location.assign(
@@ -1459,7 +1507,7 @@ function ProjectGroup({
             aria-label={`New thread in ${group.name}`}
             className="grid size-7 place-items-center rounded-md text-muted-foreground hover:text-foreground"
             onClick={() => {
-              actions.openNewThread({ projectId: group.id, focusPrompt: true });
+              navigate.toCompose({ projectId: group.id, focusPrompt: true });
               onNavigate();
             }}
             title="New thread"
@@ -1545,7 +1593,8 @@ function SidebarThreadList({
 }: PluginThreadListProps) {
   const appearance = useAppearance();
   const { status, threads, projects } = experimental_useSidebarThreads();
-  const actions = experimental_useSidebarThreadActions();
+  const envoySummaries = useEnvoySummaries(threads.map((thread) => thread.id));
+  const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
   const [createProjectBusy, setCreateProjectBusy] = useState(false);
@@ -1573,6 +1622,25 @@ function SidebarThreadList({
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects],
   );
+  const envoyOwners = useMemo(() => {
+    const byId = new Map(threads.map((thread) => [thread.id, thread]));
+    const owners = new Map<string, string>();
+    for (const thread of threads) {
+      let current: PluginSidebarThread | undefined = thread;
+      const visited = new Set<string>();
+      while (current && !visited.has(current.id)) {
+        visited.add(current.id);
+        if (envoySummaries.has(current.id)) {
+          owners.set(thread.id, current.id);
+          break;
+        }
+        current = current.parentThreadId
+          ? byId.get(current.parentThreadId)
+          : undefined;
+      }
+    }
+    return owners;
+  }, [threads, envoySummaries]);
   const query = searchQuery.trim().toLocaleLowerCase();
   const branchProjectIds = useMemo(
     () => projects.map((project) => project.id),
@@ -1626,27 +1694,71 @@ function SidebarThreadList({
           const project = projectNames.get(thread.projectId) ?? "";
           const title = thread.title ?? thread.titleFallback ?? "";
           const branch = thread.environment?.branchName ?? "";
-          return `${title} ${project} ${branch}`
+          const issue =
+            envoySummaries.get(envoyOwners.get(thread.id) ?? "")?.issue?.key ??
+            "";
+          return `${title} ${project} ${branch} ${issue}`
             .toLocaleLowerCase()
             .includes(query);
         })
         .map((thread) => thread.id),
     );
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
-    for (const thread of threads) {
-      if (!matchedIds.has(thread.id) || !thread.parentThreadId) continue;
-      if (byId.has(thread.parentThreadId))
-        matchedIds.add(thread.parentThreadId);
+    for (const id of [...matchedIds]) {
+      let parentId = byId.get(id)?.parentThreadId;
+      const visited = new Set<string>([id]);
+      while (parentId && byId.has(parentId) && !visited.has(parentId)) {
+        visited.add(parentId);
+        matchedIds.add(parentId);
+        parentId = byId.get(parentId)?.parentThreadId;
+      }
     }
     return threads.filter((thread) => matchedIds.has(thread.id));
-  }, [projectNames, query, threads]);
+  }, [projectNames, query, threads, envoyOwners, envoySummaries]);
+  const envoyGroups = useMemo(() => {
+    const activity = (thread: PluginSidebarThread) =>
+      Math.max(thread.updatedAt, thread.latestAttentionAt ?? 0);
+    const latest = new Map<string, number>();
+    for (const thread of threads) {
+      const owner = envoyOwners.get(thread.id);
+      if (owner)
+        latest.set(owner, Math.max(latest.get(owner) ?? 0, activity(thread)));
+    }
+    const children = new Map<string, PluginSidebarThread[]>();
+    const roots = [] as PluginSidebarThread[];
+    for (const thread of visibleThreads) {
+      const owner = envoyOwners.get(thread.id);
+      if (!owner) continue;
+      if (owner === thread.id) roots.push(thread);
+      else {
+        const group = children.get(owner) ?? [];
+        group.push(thread);
+        children.set(owner, group);
+      }
+    }
+    roots.sort(
+      (a, b) =>
+        (latest.get(b.id) ?? 0) - (latest.get(a.id) ?? 0) ||
+        b.createdAt - a.createdAt ||
+        a.id.localeCompare(b.id),
+    );
+    for (const group of children.values())
+      group.sort(
+        (a, b) => activity(b) - activity(a) || a.id.localeCompare(b.id),
+      );
+    return { roots, children };
+  }, [threads, visibleThreads, envoyOwners]);
+  const ordinaryThreads = useMemo(
+    () => visibleThreads.filter((thread) => !envoyOwners.has(thread.id)),
+    [visibleThreads, envoyOwners],
+  );
   const pinnedThreads = useMemo(
-    () => visibleThreads.filter((thread) => thread.isPinned),
-    [visibleThreads],
+    () => ordinaryThreads.filter((thread) => thread.isPinned),
+    [ordinaryThreads],
   );
   const projectGroups = useMemo(() => {
     const pinnedIds = new Set(pinnedThreads.map((thread) => thread.id));
-    const unpinned = visibleThreads.filter(
+    const unpinned = ordinaryThreads.filter(
       (thread) =>
         !thread.isPinned &&
         (!thread.parentThreadId || !pinnedIds.has(thread.parentThreadId)),
@@ -1678,7 +1790,7 @@ function SidebarThreadList({
       });
     }
     return groups;
-  }, [pinnedThreads, projectBranches, projects, query, visibleThreads]);
+  }, [pinnedThreads, projectBranches, projects, query, ordinaryThreads]);
   const projectGroupsById = new Map(
     projectGroups.map((group) => [group.id, group]),
   );
@@ -1726,7 +1838,7 @@ function SidebarThreadList({
   };
 
   const openCreatedProject = (projectId: string) => {
-    actions.openNewThread({ projectId, focusPrompt: true });
+    navigate.toCompose({ projectId, focusPrompt: true });
     onNavigate();
   };
 
@@ -1789,83 +1901,93 @@ function SidebarThreadList({
   }
   return (
     <AppearanceContext.Provider value={appearance}>
-      <div className="space-y-2 py-1">
-        <SagesSection onNavigate={onNavigate} />
-        {pinnedThreads.length ? (
-          <PinnedThreadsSection
+      <EnvoyContext.Provider value={envoySummaries}>
+        <div className="space-y-2 py-1">
+          <SagesSection onNavigate={onNavigate} />
+          <EnvoysSection
             activeThreadId={activeThreadId}
-            allThreads={visibleThreads}
-            expandAll={Boolean(query)}
             onNavigate={onNavigate}
-            pinnedThreads={pinnedThreads}
+            roots={envoyGroups.roots}
+            threadsByEnvoy={envoyGroups.children}
             projectNames={projectNames}
+            expandAll={Boolean(query)}
           />
-        ) : null}
+          {pinnedThreads.length ? (
+            <PinnedThreadsSection
+              activeThreadId={activeThreadId}
+              allThreads={ordinaryThreads}
+              expandAll={Boolean(query)}
+              onNavigate={onNavigate}
+              pinnedThreads={pinnedThreads}
+              projectNames={projectNames}
+            />
+          ) : null}
 
-        <section>
-          <ProjectsHeader
-            busy={createProjectBusy}
-            onNewProject={() => void startProjectCreation()}
-          />
-          <DndContext
-            collisionDetection={closestCenter}
-            onDragEnd={(event) => void reorderProject(event)}
-            sensors={projectSensors}
-          >
-            <SortableContext
-              items={orderedProjectGroups
-                .filter((group) => group.id !== "unknown")
-                .map((group) => group.id)}
-              strategy={verticalListSortingStrategy}
+          <section>
+            <ProjectsHeader
+              busy={createProjectBusy}
+              onNewProject={() => void startProjectCreation()}
+            />
+            <DndContext
+              collisionDetection={closestCenter}
+              onDragEnd={(event) => void reorderProject(event)}
+              sensors={projectSensors}
             >
-              <div className="mt-1 space-y-2">
-                {orderedProjectGroups.map((group) => (
-                  <SortableListItem
-                    disabled={
-                      Boolean(query) ||
-                      group.id === "unknown" ||
-                      projects.length < 2
-                    }
-                    id={group.id}
-                    key={group.id}
-                  >
-                    <ProjectGroup
-                      activeThreadId={activeThreadId}
-                      collapsed={!query && collapsedProjects.has(group.id)}
-                      group={group}
-                      limitThreads={!query}
-                      onNavigate={onNavigate}
-                      onToggle={() => {
-                        setCollapsedProjects((current) => {
-                          const next = new Set(current);
-                          if (next.has(group.id)) next.delete(group.id);
-                          else next.add(group.id);
-                          saveCollapsedProjects(next);
-                          return next;
-                        });
-                      }}
-                    />
-                  </SortableListItem>
-                ))}
-              </div>
-            </SortableContext>
-          </DndContext>
-        </section>
+              <SortableContext
+                items={orderedProjectGroups
+                  .filter((group) => group.id !== "unknown")
+                  .map((group) => group.id)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="mt-1 space-y-2">
+                  {orderedProjectGroups.map((group) => (
+                    <SortableListItem
+                      disabled={
+                        Boolean(query) ||
+                        group.id === "unknown" ||
+                        projects.length < 2
+                      }
+                      id={group.id}
+                      key={group.id}
+                    >
+                      <ProjectGroup
+                        activeThreadId={activeThreadId}
+                        collapsed={!query && collapsedProjects.has(group.id)}
+                        group={group}
+                        limitThreads={!query}
+                        onNavigate={onNavigate}
+                        onToggle={() => {
+                          setCollapsedProjects((current) => {
+                            const next = new Set(current);
+                            if (next.has(group.id)) next.delete(group.id);
+                            else next.add(group.id);
+                            saveCollapsedProjects(next);
+                            return next;
+                          });
+                        }}
+                      />
+                    </SortableListItem>
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
+          </section>
 
-        {visibleThreads.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            {query ? "No matching threads." : "No threads yet."}
-          </div>
-        ) : null}
-      </div>
-      <CreateProjectDialog
-        busy={createProjectBusy}
-        error={createProjectError}
-        hosts={projectCreationHosts}
-        onChoose={(hostId) => void chooseProjectFolder(hostId)}
-        onOpenChange={setCreateProjectOpen}
-        open={createProjectOpen}
-      />
+          {visibleThreads.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-muted-foreground">
+              {query ? "No matching threads." : "No threads yet."}
+            </div>
+          ) : null}
+        </div>
+        <CreateProjectDialog
+          busy={createProjectBusy}
+          error={createProjectError}
+          hosts={projectCreationHosts}
+          onChoose={(hostId) => void chooseProjectFolder(hostId)}
+          onOpenChange={setCreateProjectOpen}
+          open={createProjectOpen}
+        />
+      </EnvoyContext.Provider>
     </AppearanceContext.Provider>
   );
 }
