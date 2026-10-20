@@ -489,13 +489,13 @@ function ThreadRow({
           )}
           {envoy?.issue ? (
             <span
-              className="shrink-0"
+              className="flex shrink-0 items-center"
               onClick={(event) => event.stopPropagation()}
               onPointerDown={(event) => event.stopPropagation()}
             >
               <UrlLink
                 href={envoy.issue.url}
-                className="rounded border border-border px-1 text-[10px] text-muted-foreground"
+                className="inline-flex h-4 items-center rounded border border-border px-1 text-[10px] leading-none text-muted-foreground"
               >
                 [{envoy.issue.key}]
               </UrlLink>
