@@ -40,7 +40,22 @@ const { definePluginApp } = await import("@get-bb/plugin-sdk/app");
 const definition = (await import("./app.tsx")).default;
 const app = await loadPluginApp(definition);
 
-test("Envoy issue stays on the first line, worktree context is visible unpinned, and native actions work", async () => {
+/** An sdk.plugins stub where each provider id answers with `respond`. */
+function sectionProviders(providers, calls = []) {
+  return {
+    experimental_discoverRpc: async ({ method }) =>
+      Object.keys(providers).map((pluginId) => ({ pluginId, method })),
+    callRpc: async (args) => {
+      calls.push(args);
+      return providers[args.pluginId](args);
+    },
+  };
+}
+const envoySection = (threads) => ({
+  sections: [{ id: "envoys", title: "Envoys", order: 10, threads }],
+});
+
+test("A title badge stays on the first line, meta badges sit below, worktree context is visible unpinned, and native actions work", async () => {
   let deleted = false;
   const thread = {
     id: "thread-1",
@@ -83,24 +98,26 @@ test("Envoy issue stays on the first line, worktree context is visible unpinned,
         projectBranches: () => ({}),
       },
       sdk: {
-        plugins: {
-          callRpc: async (args) => {
-            if (args.method === "envoys_summaries")
-              return {
-                envoys: [
+        plugins: sectionProviders({
+          sages: () =>
+            envoySection([
+              {
+                threadId: "thread-1",
+                badges: [
                   {
-                    threadId: "thread-1",
-                    lifecycle: "active",
-                    issue: {
-                      key: "WAL-123",
-                      url: "https://linear.app/wallet/issue/WAL-123",
-                    },
+                    label: "[WAL-123]",
+                    placement: "title",
+                    href: "https://linear.app/wallet/issue/WAL-123",
+                  },
+                  {
+                    label: "Metro :8099",
+                    tone: "success",
+                    title: "Metro running from /test/worktree/apps/mobile",
                   },
                 ],
-              };
-            return { sages: [] };
-          },
-        },
+              },
+            ]),
+        }),
       },
       threadActions: () => [
         {
@@ -127,6 +144,13 @@ test("Envoy issue stays on the first line, worktree context is visible unpinned,
     assert.ok(slot.queryByText("· BB worktree"));
     const row = slot.getByText("Fix saved-swap crash").closest('[role="link"]');
     assert.ok(row.contains(issue));
+    const metro = slot.getByText("Metro :8099");
+    assert.equal(metro.getAttribute("href"), null);
+    assert.equal(
+      metro.getAttribute("title"),
+      "Metro running from /test/worktree/apps/mobile",
+    );
+    assert.ok(!issue.parentElement.contains(metro));
     fireEvent.click(issue);
     assert.ok(
       !slot.inspection.navigateCalls.some((call) => call.method === "toThread"),
@@ -148,7 +172,7 @@ test("Envoy issue stays on the first line, worktree context is visible unpinned,
   }
 });
 
-test("Envoys own their pinned tasks and descendants, sort by latest task activity, and stay searchable", async () => {
+test("Claimed threads own their pinned tasks and descendants, sort by latest task activity, and stay searchable by badge", async () => {
   const makeThread = (id, title, updatedAt, extra = {}) => ({
     id,
     title,
@@ -198,24 +222,16 @@ test("Envoys own their pinned tasks and descendants, sort by latest task activit
       pinnedThreadOrder: () => ({ threadIds: [] }),
     },
     sdk: {
-      plugins: {
-        callRpc: async ({ method }) =>
-          method === "envoys_summaries"
-            ? {
-                envoys: [
-                  {
-                    threadId: "envoy-a",
-                    lifecycle: "active",
-                    issue: {
-                      key: "WAL-123",
-                      url: "https://linear.app/wallet/issue/WAL-123",
-                    },
-                  },
-                  { threadId: "envoy-b", lifecycle: "active", issue: null },
-                ],
-              }
-            : { sages: [] },
-      },
+      plugins: sectionProviders({
+        sages: () =>
+          envoySection([
+            {
+              threadId: "envoy-a",
+              badges: [{ label: "[WAL-123]", placement: "title" }],
+            },
+            { threadId: "envoy-b" },
+          ]),
+      }),
     },
   });
   const rootOrder = () =>
@@ -244,7 +260,7 @@ test("Envoys own their pinned tasks and descendants, sort by latest task activit
     // The harness retains the fixture array. Publish a summary refresh after
     // changing it so the slot receives a fresh render of the host snapshot.
     threads[0] = { ...threads[0], updatedAt: 400, latestAttentionAt: 400 };
-    await slot.behavior.emitRealtime("envoys-refresh", {});
+    await slot.behavior.emitRealtime("sections-refresh", {});
     await waitFor(() => assert.deepEqual(rootOrder(), ["envoy-b", "envoy-a"]));
     const { createElement } = await import("react");
     slot.lifecycle.rerender(
@@ -265,6 +281,127 @@ test("Envoys own their pinned tasks and descendants, sort by latest task activit
     );
     assert.ok(slot.queryByText("First task"));
     assert.equal(slot.queryByText("Second task"), null);
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});
+
+test("Link sections render with nested links, skipping a malformed section and a failing provider", async () => {
+  const calls = [];
+  const slot = renderSlot(
+    app.threadLists[0],
+    { activeThreadId: null, onNavigate() {}, searchQuery: "" },
+    {
+      sidebarThreads: { status: "ready", threads: [], projects: [] },
+      rpc: { getAppearance: () => ({}), projectBranches: () => ({}) },
+      sdk: {
+        plugins: sectionProviders(
+          {
+            broken: () => {
+              throw new Error("down");
+            },
+            sages: ({ method, input }) =>
+              method === "sidebar-section.v1.reorder"
+                ? { ids: input.ids }
+                : {
+                    sections: [
+                      { id: "bad", title: "" },
+                      {
+                        id: "sages",
+                        title: "Sages",
+                        reorderable: true,
+                        links: [
+                          {
+                            id: "s1",
+                            label: "Wallet sage",
+                            path: "/plugins/sages/sages/s1",
+                            children: [
+                              {
+                                id: "a1",
+                                label: "Swap acolyte",
+                                path: "/plugins/sages/sages/a1",
+                              },
+                            ],
+                          },
+                          {
+                            id: "s2",
+                            label: "Infra sage",
+                            path: "/plugins/sages/sages/s2",
+                          },
+                        ],
+                      },
+                    ],
+                  },
+          },
+          calls,
+        ),
+      },
+    },
+  );
+  try {
+    await waitFor(() => assert.ok(slot.queryByText("Wallet sage")));
+    const section = slot.getByRole("region", { name: "Sages" });
+    assert.ok(section.contains(slot.getByText("Swap acolyte")));
+    assert.equal(
+      slot.getByText("Infra sage").closest("a").getAttribute("href"),
+      "http://localhost/plugins/sages/sages/s2",
+    );
+    assert.ok(
+      calls.some(
+        (call) =>
+          call.pluginId === "broken" &&
+          call.method === "sidebar-section.v1.get",
+      ),
+    );
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});
+
+test("A provider's refresh refetches only its sections, and its activityAt reorders claimed threads", async () => {
+  const calls = [];
+  let newest = "b";
+  const thread = (id, updatedAt) => ({
+    id, title: `Task ${id}`, updatedAt, createdAt: updatedAt, latestAttentionAt: updatedAt,
+    projectId: "p", titleFallback: null, parentThreadId: null, sectionId: null, status: "idle",
+    isUnread: false, isPinned: false, pinnedAt: null, archivedAt: null, isArchived: false,
+    isHidden: false, indicator: "none", activity: {}, href: `/t/${id}`, environment: null,
+  });
+  const slot = renderSlot(
+    app.threadLists[0],
+    { activeThreadId: null, onNavigate() {}, searchQuery: "" },
+    {
+      sidebarThreads: { status: "ready", threads: [thread("a", 100), thread("b", 200)], projects: [{ id: "p", name: "P" }] },
+      rpc: { getAppearance: () => ({}), projectBranches: () => ({}) },
+      sdk: {
+        plugins: sectionProviders(
+          {
+            sages: () => envoySection([
+              { threadId: "a", activityAt: newest === "a" ? 9_000 : null },
+              { threadId: "b" },
+            ]),
+            other: () => ({ sections: [{ id: "x", title: "Other", links: [{ id: "l", label: "Link", path: "/x" }] }] }),
+          },
+          calls,
+        ),
+      },
+    },
+  );
+  const order = () =>
+    [...slot.getByRole("region", { name: "Envoys" }).querySelectorAll("[data-sidebar-thread-id]")]
+      .map((row) => row.dataset.sidebarThreadId);
+  try {
+    await waitFor(() => assert.deepEqual(order(), ["b", "a"]));
+    assert.ok(slot.queryByText("Link"));
+    const count = (pluginId) => calls.filter((c) => c.pluginId === pluginId).length;
+    const [sagesBefore, otherBefore] = [count("sages"), count("other")];
+    newest = "a";
+    await slot.behavior.emitRealtime("sections-refresh", { pluginId: "sages" });
+    await slot.behavior.emitRealtime("sections-refresh", { pluginId: "sages" });
+    await waitFor(() => assert.deepEqual(order(), ["a", "b"]));
+    assert.equal(count("sages"), sagesBefore + 1);
+    assert.equal(count("other"), otherBefore);
+    assert.ok(slot.queryByText("Link"));
   } finally {
     slot.lifecycle.unmount();
   }

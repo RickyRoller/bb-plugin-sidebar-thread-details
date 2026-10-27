@@ -44,6 +44,16 @@ import {
   defaultAppearance,
   type Appearance,
 } from "./appearance";
+import {
+  SECTION_METHOD,
+  SECTION_REORDER_METHOD,
+  mergeSections,
+  sectionsOutputSchema,
+  sortSections,
+  type Badge,
+  type Section,
+  type SectionLink,
+} from "./sections";
 import { toast } from "sonner";
 import { Button } from "./components/ui/button";
 import {
@@ -56,69 +66,94 @@ import {
 } from "./components/ui/dialog";
 
 const AppearanceContext = createContext(defaultAppearance);
-const EnvoyContext = createContext(
-  new Map<
-    string,
-    { issue: { key: string; url: string } | null; lifecycle: string }
-  >(),
+// Badges a section provider put on each thread it claims, by thread id.
+const SectionThreadContext = createContext(
+  new Map<string, { badges: readonly Badge[] }>(),
 );
-const envoySummarySchema = z.object({
-  envoys: z.array(
-    z.object({
-      threadId: z.string().nullable(),
-      lifecycle: z.string(),
-      issue: z.object({ key: z.string(), url: z.string() }).nullable(),
-    }),
-  ),
-});
-function useEnvoySummaries(threadIds: string[]) {
+
+/**
+ * Every section other plugins offer (see sections.ts), kept per provider. A
+ * provider's refresh refetches only its own sections; bursts of refreshes
+ * collapse into one request. A refresh from an unknown provider, or with no
+ * provider named, finds providers again, so a plugin installed, reloaded or
+ * removed later is picked up. A provider whose request fails keeps the
+ * sections it last returned.
+ */
+function useSidebarSections(threadIds: string[]) {
   const sdk = useSdk();
-  const [envoys, setEnvoys] = useState(
-    new Map<
-      string,
-      { issue: { key: string; url: string } | null; lifecycle: string }
-    >(),
-  );
+  const [byPlugin, setByPlugin] = useState(new Map<string, Section[]>());
+  const known = useRef(new Set<string>());
   const idsKey = [...threadIds].sort().join("\u0000");
-  const generation = useRef(0);
-  const refresh = useCallback(() => {
-    const current = ++generation.current;
-    const ids = idsKey ? idsKey.split("\u0000") : [];
-    if (!ids.length) {
-      setEnvoys(new Map());
-      return;
-    }
-    // One lookup for all visible rows, never a request per thread.
-    Promise.all(
-      Array.from({ length: Math.ceil(ids.length / 1000) }, (_, i) =>
-        sdk.plugins.callRpc({
-          pluginId: "sages",
-          method: "envoys_summaries",
-          input: { threadIds: ids.slice(i * 1000, (i + 1) * 1000) },
-          outputSchema: envoySummarySchema,
-        }),
-      ),
-    ).then(
-      (pages) => {
-        if (current === generation.current)
-          setEnvoys(
-            new Map(
-              pages.flatMap((page) =>
-                page.envoys
-                  .filter((e) => e.threadId)
-                  .map((e) => [e.threadId!, e] as const),
-              ),
-            ),
+  const generations = useRef(new Map<string, number>());
+  const load = useCallback(
+    (pluginId: string) => {
+      const generation = (generations.current.get(pluginId) ?? 0) + 1;
+      generations.current.set(pluginId, generation);
+      const ids = idsKey ? idsKey.split("\u0000") : [];
+      // One lookup per thousand rows, never a request per thread.
+      void Promise.all(
+        Array.from({ length: Math.max(1, Math.ceil(ids.length / 1000)) }, (_, i) =>
+          sdk.plugins.callRpc({
+            pluginId,
+            method: SECTION_METHOD,
+            input: { threadIds: ids.slice(i * 1000, (i + 1) * 1000) },
+            outputSchema: sectionsOutputSchema,
+          }),
+        ),
+      ).then(
+        (pages) => {
+          if (generations.current.get(pluginId) !== generation) return;
+          if (!known.current.has(pluginId)) return;
+          setByPlugin((current) =>
+            new Map(current).set(pluginId, mergeSections(pluginId, pages)),
           );
-      },
-      () => {
-        if (current === generation.current) setEnvoys(new Map());
-      },
+        },
+        () => {},
+      );
+    },
+    [sdk, idsKey],
+  );
+  const discovery = useRef(0);
+  const loadAll = useCallback(() => {
+    const generation = ++discovery.current;
+    void sdk.plugins
+      .experimental_discoverRpc({ method: SECTION_METHOD })
+      .then((methods) => [...new Set(methods.map((each) => each.pluginId))])
+      .catch(() => [...known.current])
+      .then((pluginIds) => {
+        if (generation !== discovery.current) return;
+        known.current = new Set(pluginIds);
+        setByPlugin(
+          (current) =>
+            new Map([...current].filter(([id]) => known.current.has(id))),
+        );
+        pluginIds.forEach(load);
+      });
+  }, [sdk, load]);
+  useEffect(loadAll, [loadAll]);
+
+  const timers = useRef(new Map<string, number>());
+  useEffect(
+    () => () => {
+      for (const timer of timers.current.values()) window.clearTimeout(timer);
+    },
+    [],
+  );
+  useRealtime("sections-refresh", (payload) => {
+    const named = (payload as { pluginId?: unknown } | null)?.pluginId;
+    const key =
+      typeof named === "string" && known.current.has(named) ? named : "";
+    if (timers.current.has(key)) return;
+    timers.current.set(
+      key,
+      window.setTimeout(() => {
+        timers.current.delete(key);
+        if (key) load(key);
+        else loadAll();
+      }, 150),
     );
-  }, [sdk, idsKey]);
-  useEffect(refresh, [refresh]);
-  useRealtime("envoys-refresh", refresh);
-  return envoys;
+  });
+  return useMemo(() => sortSections([...byPlugin.values()].flat()), [byPlugin]);
 }
 
 function useAppearance() {
@@ -360,6 +395,49 @@ interface ThreadRowProps {
   onNavigate: () => void;
 }
 
+const BADGE_TONES: Record<Badge["tone"], string> = {
+  neutral: "border-border text-muted-foreground",
+  info: "border-sky-500/40 text-sky-600 dark:text-sky-400",
+  success: "border-emerald-500/40 text-emerald-600 dark:text-emerald-400",
+  warning: "border-amber-500/50 text-amber-600 dark:text-amber-400",
+  danger: "border-red-500/50 text-red-600 dark:text-red-400",
+};
+
+/** A section provider's badges; a badge with a link opens it, not the row. */
+function BadgeList({
+  badges,
+  className,
+}: {
+  badges: readonly Badge[];
+  className: string;
+}) {
+  return (
+    <span
+      className={className}
+      onClick={(event) => event.stopPropagation()}
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {badges.map((badge, index) => {
+        const style = `inline-flex h-4 max-w-full items-center truncate rounded border px-1 text-[10px] leading-none ${BADGE_TONES[badge.tone]}`;
+        return badge.href ? (
+          <UrlLink
+            className={style}
+            href={badge.href}
+            key={index}
+            title={badge.title ?? undefined}
+          >
+            {badge.label}
+          </UrlLink>
+        ) : (
+          <span className={style} key={index} title={badge.title ?? undefined}>
+            {badge.label}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 function ThreadRow({
   thread,
   projectName,
@@ -369,7 +447,9 @@ function ThreadRow({
   onNavigate,
 }: ThreadRowProps) {
   const appearance = useContext(AppearanceContext);
-  const envoy = useContext(EnvoyContext).get(thread.id);
+  const claimed = useContext(SectionThreadContext).get(thread.id);
+  const titleBadges = claimed?.badges.filter((b) => b.placement === "title");
+  const metaBadges = claimed?.badges.filter((b) => b.placement === "meta");
   const sdk = useSdk();
   const navigate = useBbNavigate();
   const { splitProps } = experimental_useSidebarThreadSplit(thread.id);
@@ -487,23 +567,15 @@ function ThreadRow({
               {title}
             </span>
           )}
-          {envoy?.issue ? (
-            <span
-              className="flex shrink-0 items-center"
-              onClick={(event) => event.stopPropagation()}
-              onPointerDown={(event) => event.stopPropagation()}
-            >
-              <UrlLink
-                href={envoy.issue.url}
-                className="inline-flex h-4 items-center rounded border border-border px-1 text-[10px] leading-none text-muted-foreground"
-              >
-                [{envoy.issue.key}]
-              </UrlLink>
-            </span>
+          {titleBadges?.length ? (
+            <BadgeList
+              badges={titleBadges}
+              className="flex shrink-0 items-center gap-1"
+            />
           ) : null}
         </span>
 
-        {thread.isPinned || envoy ? (
+        {thread.isPinned || claimed ? (
           <span
             className="mt-0.5 flex min-w-0 items-center gap-1 truncate text-[11px] leading-4 text-muted-foreground/70"
             title={branchName ? `${projectName} - ${branchName}` : projectName}
@@ -514,7 +586,7 @@ function ThreadRow({
             >
               {projectName}
             </span>
-            {envoy ? (
+            {claimed ? (
               <span className="truncate">
                 ·{" "}
                 {thread.environment?.isWorktree
@@ -532,6 +604,12 @@ function ThreadRow({
               </span>
             ) : null}
           </span>
+        ) : null}
+        {metaBadges?.length ? (
+          <BadgeList
+            badges={metaBadges}
+            className="mt-1 flex min-w-0 flex-wrap items-center gap-1"
+          />
         ) : null}
       </div>
 
@@ -779,44 +857,6 @@ function SortableListItem({
   );
 }
 
-// Sages (the Sages plugin) listed above Pinned, each with its open acolytes
-// under it. They live in another plugin, so they are read through its RPC:
-// once when the sidebar mounts, again when the Sages plugin opens or closes a
-// acolyte, and when Refresh sages is pressed in this plugin's settings.
-const sageListSchema = z.object({
-  sages: z.array(
-    z.looseObject({
-      id: z.string(),
-      name: z.string(),
-      parentId: z.string().nullish(),
-      archivedAt: z.string().nullish(),
-    }),
-  ),
-});
-type SageRow = z.infer<typeof sageListSchema>["sages"][number];
-
-function useSages(): SageRow[] {
-  const sdk = useSdk();
-  const [sages, setSages] = useState<SageRow[]>([]);
-  const load = useCallback(() => {
-    sdk.plugins
-      .callRpc({
-        pluginId: "sages",
-        method: "sages_list",
-        input: null,
-        outputSchema: sageListSchema,
-      })
-      // Without the Sages plugin the section stays empty and hidden.
-      .then(
-        (result) => setSages(result.sages),
-        () => setSages([]),
-      );
-  }, [sdk]);
-  useEffect(load, [load]);
-  useRealtime("sages-refresh", load);
-  return sages;
-}
-
 /** The app's current path, kept current across in-app navigation. */
 function usePathname(): string {
   const [pathname, setPathname] = useState(window.location.pathname);
@@ -834,33 +874,102 @@ function usePathname(): string {
   return pathname;
 }
 
-function SagesSection({ onNavigate }: { onNavigate: () => void }) {
+function SectionLinkRow({
+  link,
+  nested = false,
+  onNavigate,
+  pathname,
+}: {
+  link: Omit<SectionLink, "children">;
+  nested?: boolean;
+  onNavigate: () => void;
+  pathname: string;
+}) {
+  const active = pathname === link.path;
+  return (
+    <UrlLink
+      href={new URL(link.path, window.location.origin).href}
+      aria-current={active ? "page" : undefined}
+      onClick={onNavigate}
+      className={`mx-2 flex min-w-0 items-center gap-2 rounded-lg text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
+        nested ? "mt-0.5 py-1.5 pl-7 pr-2.5" : "px-2.5 py-2"
+      } ${
+        active
+          ? "bg-accent text-accent-foreground"
+          : nested
+            ? "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+            : "hover:bg-accent/60"
+      }`}
+    >
+      {link.icon ? (
+        <Icon
+          name={link.icon as never}
+          className={`size-3.5 shrink-0 ${nested ? "" : "text-muted-foreground"}`}
+        />
+      ) : null}
+      <span
+        className={`min-w-0 flex-1 truncate ${nested ? "" : "font-medium"}`}
+      >
+        {link.label}
+      </span>
+      {link.badges.length ? (
+        <BadgeList
+          badges={link.badges}
+          className="flex shrink-0 items-center gap-1"
+        />
+      ) : null}
+    </UrlLink>
+  );
+}
+
+/**
+ * One section another plugin offers: its links (draggable when the provider
+ * accepts a new order), then the threads it claims with their children.
+ */
+function PluginSection({
+  section,
+  activeThreadId,
+  onNavigate,
+  roots,
+  childrenByRoot,
+  projectNames,
+  expandAll,
+}: {
+  section: Section;
+  activeThreadId: string | null;
+  onNavigate: () => void;
+  roots: readonly PluginSidebarThread[];
+  childrenByRoot: ReadonlyMap<string, PluginSidebarThread[]>;
+  projectNames: ReadonlyMap<string, string>;
+  expandAll: boolean;
+}) {
   const sdk = useSdk();
-  const loaded = useSages();
   const pathname = usePathname();
-  // Shown order: the loaded order until a drag reorders it.
+  const [expandedParents, setExpandedParents] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Shown order: the provider's order until a drag reorders it.
   const [order, setOrder] = useState<string[] | null>(null);
-  useEffect(() => setOrder(null), [loaded]);
+  useEffect(() => setOrder(null), [section.links]);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 4 } }),
     useSensor(TouchSensor, {
       activationConstraint: { delay: 200, tolerance: 6 },
     }),
   );
-  const roots = loaded.filter((sage) => sage.parentId == null);
-  const byId = new Map(roots.map((sage) => [sage.id, sage]));
-  const sages =
+  const byId = new Map(section.links.map((link) => [link.id, link]));
+  const links =
     order === null
-      ? roots
+      ? section.links
       : order.flatMap((id) => {
-          const sage = byId.get(id);
-          return sage === undefined ? [] : [sage];
+          const link = byId.get(id);
+          return link === undefined ? [] : [link];
         });
-  if (sages.length === 0) return null;
+  if (!links.length && !roots.length) return null;
 
   const reorder = async ({ active, over }: DragEndEvent) => {
     if (over === null || active.id === over.id) return;
-    const ids = sages.map((sage) => sage.id);
+    const ids = links.map((link) => link.id);
     const next = arrayMove(
       ids,
       ids.indexOf(String(active.id)),
@@ -869,170 +978,106 @@ function SagesSection({ onNavigate }: { onNavigate: () => void }) {
     setOrder(next);
     try {
       await sdk.plugins.callRpc({
-        pluginId: "sages",
-        method: "sages_reorder",
-        input: { ids: next },
+        pluginId: section.pluginId,
+        method: SECTION_REORDER_METHOD,
+        input: { sectionId: section.id, ids: next },
         outputSchema: z.object({ ids: z.array(z.string()) }),
       });
     } catch {
       setOrder(null);
-      toast.error("Couldn’t reorder sages");
+      toast.error(`Couldn’t reorder ${section.title.toLocaleLowerCase()}`);
     }
   };
 
   return (
-    <section>
+    <section aria-label={section.title}>
       <div className="mx-2 px-2.5 py-1 text-xs font-medium text-muted-foreground">
-        Sages
+        {section.title}
       </div>
-      <DndContext
-        collisionDetection={closestCenter}
-        onDragEnd={(event) => void reorder(event)}
-        sensors={sensors}
-      >
-        <SortableContext
-          items={sages.map((sage) => sage.id)}
-          strategy={verticalListSortingStrategy}
+      {links.length ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          onDragEnd={(event) => void reorder(event)}
+          sensors={sensors}
         >
-          <div className="space-y-0.5">
-            {sages.map((sage) => {
-              const path = `/plugins/sages/sages/${sage.id}`;
-              const active = pathname === path;
-              return (
+          <SortableContext
+            items={links.map((link) => link.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-0.5">
+              {links.map((link) => (
                 <SortableListItem
-                  disabled={sages.length < 2}
-                  id={sage.id}
-                  key={sage.id}
+                  disabled={!section.reorderable || links.length < 2}
+                  id={link.id}
+                  key={link.id}
                 >
-                  <UrlLink
-                    href={new URL(path, window.location.origin).href}
-                    aria-current={active ? "page" : undefined}
-                    onClick={onNavigate}
-                    className={`mx-2 flex min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-                      active
-                        ? "bg-accent text-accent-foreground"
-                        : "hover:bg-accent/60"
-                    }`}
-                  >
-                    <Icon
-                      name="sages/sage"
-                      className="size-3.5 shrink-0 text-muted-foreground"
+                  <SectionLinkRow
+                    link={link}
+                    onNavigate={onNavigate}
+                    pathname={pathname}
+                  />
+                  {link.children.map((child) => (
+                    <SectionLinkRow
+                      key={child.id}
+                      link={child}
+                      nested
+                      onNavigate={onNavigate}
+                      pathname={pathname}
                     />
-                    <span className="min-w-0 flex-1 truncate font-medium">
-                      {sage.name}
-                    </span>
-                  </UrlLink>
-                  {loaded
-                    .filter(
-                      (acolyte) =>
-                        acolyte.parentId === sage.id &&
-                        acolyte.archivedAt == null,
-                    )
-                    .map((acolyte) => {
-                      const acolytePath = `/plugins/sages/sages/${acolyte.id}`;
-                      const acolyteActive = pathname === acolytePath;
-                      return (
-                        <UrlLink
-                          key={acolyte.id}
-                          href={
-                            new URL(acolytePath, window.location.origin).href
-                          }
-                          aria-current={acolyteActive ? "page" : undefined}
-                          onClick={onNavigate}
-                          className={`mx-2 mt-0.5 flex min-w-0 items-center gap-2 rounded-lg py-1.5 pl-7 pr-2.5 text-sm outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring ${
-                            acolyteActive
-                              ? "bg-accent text-accent-foreground"
-                              : "text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                          }`}
-                        >
-                          <Icon
-                            name="GitBranch"
-                            className="size-3.5 shrink-0"
-                          />
-                          <span className="min-w-0 flex-1 truncate">
-                            {acolyte.name}
-                          </span>
-                        </UrlLink>
-                      );
-                    })}
+                  ))}
                 </SortableListItem>
-              );
-            })}
-          </div>
-        </SortableContext>
-      </DndContext>
-    </section>
-  );
-}
-
-function EnvoysSection({
-  activeThreadId,
-  onNavigate,
-  roots,
-  threadsByEnvoy,
-  projectNames,
-  expandAll,
-}: {
-  activeThreadId: string | null;
-  onNavigate: () => void;
-  roots: readonly PluginSidebarThread[];
-  threadsByEnvoy: ReadonlyMap<string, PluginSidebarThread[]>;
-  projectNames: ReadonlyMap<string, string>;
-  expandAll: boolean;
-}) {
-  const [expandedParents, setExpandedParents] = useState<Set<string>>(
-    () => new Set(),
-  );
-  if (!roots.length) return null;
-  return (
-    <section aria-label="Envoys">
-      <div className="mx-2 px-2.5 py-1 text-xs font-medium text-muted-foreground">
-        Envoys
-      </div>
-      <div className="space-y-0.5">
-        {roots.map((thread) => {
-          const children = threadsByEnvoy.get(thread.id) ?? [];
-          const expanded = expandAll || expandedParents.has(thread.id);
-          return (
-            <div className="space-y-px" key={thread.id}>
-              <ThreadRow
-                active={thread.id === activeThreadId}
-                thread={thread}
-                projectName={
-                  projectNames.get(thread.projectId) ?? "Unknown project"
-                }
-                onNavigate={onNavigate}
-                childrenSummary={
-                  children.length
-                    ? {
-                        count: children.length,
-                        workingCount: children.filter(isThreadWorking).length,
-                        expanded,
-                        hasActiveChild: children.some(
-                          (child) => child.id === activeThreadId,
-                        ),
-                        onToggle: () =>
-                          setExpandedParents((current) => {
-                            const next = new Set(current);
-                            if (next.has(thread.id)) next.delete(thread.id);
-                            else next.add(thread.id);
-                            return next;
-                          }),
-                      }
-                    : undefined
-                }
-              />
-              <ChildThreadList
-                activeThreadId={activeThreadId}
-                children={children}
-                expanded={expanded}
-                limitThreads={!expandAll}
-                onNavigate={onNavigate}
-              />
+              ))}
             </div>
-          );
-        })}
-      </div>
+          </SortableContext>
+        </DndContext>
+      ) : null}
+      {roots.length ? (
+        <div className={`space-y-0.5 ${links.length ? "mt-0.5" : ""}`}>
+          {roots.map((thread) => {
+            const children = childrenByRoot.get(thread.id) ?? [];
+            const expanded = expandAll || expandedParents.has(thread.id);
+            return (
+              <div className="space-y-px" key={thread.id}>
+                <ThreadRow
+                  active={thread.id === activeThreadId}
+                  thread={thread}
+                  projectName={
+                    projectNames.get(thread.projectId) ?? "Unknown project"
+                  }
+                  onNavigate={onNavigate}
+                  childrenSummary={
+                    children.length
+                      ? {
+                          count: children.length,
+                          workingCount: children.filter(isThreadWorking)
+                            .length,
+                          expanded,
+                          hasActiveChild: children.some(
+                            (child) => child.id === activeThreadId,
+                          ),
+                          onToggle: () =>
+                            setExpandedParents((current) => {
+                              const next = new Set(current);
+                              if (next.has(thread.id)) next.delete(thread.id);
+                              else next.add(thread.id);
+                              return next;
+                            }),
+                        }
+                      : undefined
+                  }
+                />
+                <ChildThreadList
+                  activeThreadId={activeThreadId}
+                  children={children}
+                  expanded={expanded}
+                  limitThreads={!expandAll}
+                  onNavigate={onNavigate}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -1593,7 +1638,21 @@ function SidebarThreadList({
 }: PluginThreadListProps) {
   const appearance = useAppearance();
   const { status, threads, projects } = experimental_useSidebarThreads();
-  const envoySummaries = useEnvoySummaries(threads.map((thread) => thread.id));
+  const sections = useSidebarSections(threads.map((thread) => thread.id));
+  // Each claimed thread's badges, and the section that claimed it first.
+  const claims = useMemo(() => {
+    const badges = new Map<string, { badges: readonly Badge[] }>();
+    const sectionOf = new Map<string, string>();
+    const activityAt = new Map<string, number>();
+    for (const section of sections)
+      for (const { threadId, badges: list, activityAt: at } of section.threads)
+        if (!sectionOf.has(threadId)) {
+          sectionOf.set(threadId, `${section.pluginId}\u0000${section.id}`);
+          badges.set(threadId, { badges: list });
+          if (at) activityAt.set(threadId, at);
+        }
+    return { badges, sectionOf, activityAt };
+  }, [sections]);
   const navigate = useBbNavigate();
   const rpc = useRpc<typeof rpcContract>();
   const [createProjectOpen, setCreateProjectOpen] = useState(false);
@@ -1622,7 +1681,8 @@ function SidebarThreadList({
     () => new Map(projects.map((project) => [project.id, project.name])),
     [projects],
   );
-  const envoyOwners = useMemo(() => {
+  // A claimed thread's descendants stay with it in its section.
+  const claimOwners = useMemo(() => {
     const byId = new Map(threads.map((thread) => [thread.id, thread]));
     const owners = new Map<string, string>();
     for (const thread of threads) {
@@ -1630,7 +1690,7 @@ function SidebarThreadList({
       const visited = new Set<string>();
       while (current && !visited.has(current.id)) {
         visited.add(current.id);
-        if (envoySummaries.has(current.id)) {
+        if (claims.sectionOf.has(current.id)) {
           owners.set(thread.id, current.id);
           break;
         }
@@ -1640,7 +1700,7 @@ function SidebarThreadList({
       }
     }
     return owners;
-  }, [threads, envoySummaries]);
+  }, [threads, claims]);
   const query = searchQuery.trim().toLocaleLowerCase();
   const branchProjectIds = useMemo(
     () => projects.map((project) => project.id),
@@ -1694,10 +1754,12 @@ function SidebarThreadList({
           const project = projectNames.get(thread.projectId) ?? "";
           const title = thread.title ?? thread.titleFallback ?? "";
           const branch = thread.environment?.branchName ?? "";
-          const issue =
-            envoySummaries.get(envoyOwners.get(thread.id) ?? "")?.issue?.key ??
-            "";
-          return `${title} ${project} ${branch} ${issue}`
+          const badges = (
+            claims.badges.get(claimOwners.get(thread.id) ?? "")?.badges ?? []
+          )
+            .map((badge) => badge.label)
+            .join(" ");
+          return `${title} ${project} ${branch} ${badges}`
             .toLocaleLowerCase()
             .includes(query);
         })
@@ -1714,20 +1776,20 @@ function SidebarThreadList({
       }
     }
     return threads.filter((thread) => matchedIds.has(thread.id));
-  }, [projectNames, query, threads, envoyOwners, envoySummaries]);
-  const envoyGroups = useMemo(() => {
+  }, [projectNames, query, threads, claimOwners, claims]);
+  const sectionGroups = useMemo(() => {
     const activity = (thread: PluginSidebarThread) =>
       Math.max(thread.updatedAt, thread.latestAttentionAt ?? 0);
-    const latest = new Map<string, number>();
+    const latest = new Map(claims.activityAt);
     for (const thread of threads) {
-      const owner = envoyOwners.get(thread.id);
+      const owner = claimOwners.get(thread.id);
       if (owner)
         latest.set(owner, Math.max(latest.get(owner) ?? 0, activity(thread)));
     }
     const children = new Map<string, PluginSidebarThread[]>();
     const roots = [] as PluginSidebarThread[];
     for (const thread of visibleThreads) {
-      const owner = envoyOwners.get(thread.id);
+      const owner = claimOwners.get(thread.id);
       if (!owner) continue;
       if (owner === thread.id) roots.push(thread);
       else {
@@ -1746,11 +1808,16 @@ function SidebarThreadList({
       group.sort(
         (a, b) => activity(b) - activity(a) || a.id.localeCompare(b.id),
       );
-    return { roots, children };
-  }, [threads, visibleThreads, envoyOwners]);
+    const rootsBySection = new Map<string, PluginSidebarThread[]>();
+    for (const root of roots) {
+      const key = claims.sectionOf.get(root.id)!;
+      rootsBySection.set(key, [...(rootsBySection.get(key) ?? []), root]);
+    }
+    return { rootsBySection, children };
+  }, [threads, visibleThreads, claimOwners, claims]);
   const ordinaryThreads = useMemo(
-    () => visibleThreads.filter((thread) => !envoyOwners.has(thread.id)),
-    [visibleThreads, envoyOwners],
+    () => visibleThreads.filter((thread) => !claimOwners.has(thread.id)),
+    [visibleThreads, claimOwners],
   );
   const pinnedThreads = useMemo(
     () => ordinaryThreads.filter((thread) => thread.isPinned),
@@ -1901,17 +1968,24 @@ function SidebarThreadList({
   }
   return (
     <AppearanceContext.Provider value={appearance}>
-      <EnvoyContext.Provider value={envoySummaries}>
+      <SectionThreadContext.Provider value={claims.badges}>
         <div className="space-y-2 py-1">
-          <SagesSection onNavigate={onNavigate} />
-          <EnvoysSection
-            activeThreadId={activeThreadId}
-            onNavigate={onNavigate}
-            roots={envoyGroups.roots}
-            threadsByEnvoy={envoyGroups.children}
-            projectNames={projectNames}
-            expandAll={Boolean(query)}
-          />
+          {sections.map((section) => (
+            <PluginSection
+              key={`${section.pluginId}\u0000${section.id}`}
+              section={section}
+              activeThreadId={activeThreadId}
+              onNavigate={onNavigate}
+              roots={
+                sectionGroups.rootsBySection.get(
+                  `${section.pluginId}\u0000${section.id}`,
+                ) ?? []
+              }
+              childrenByRoot={sectionGroups.children}
+              projectNames={projectNames}
+              expandAll={Boolean(query)}
+            />
+          ))}
           {pinnedThreads.length ? (
             <PinnedThreadsSection
               activeThreadId={activeThreadId}
@@ -1987,7 +2061,7 @@ function SidebarThreadList({
           onOpenChange={setCreateProjectOpen}
           open={createProjectOpen}
         />
-      </EnvoyContext.Provider>
+      </SectionThreadContext.Provider>
     </AppearanceContext.Provider>
   );
 }
@@ -2157,16 +2231,16 @@ function AppearanceSettings() {
         <Button
           className="mr-auto"
           onClick={() =>
-            void rpc.call("refreshSages", {}).then(
-              () => toast.success("Sages refreshed"),
-              () => toast.error("Couldn’t refresh sages"),
+            void rpc.call("refreshSections", {}).then(
+              () => toast.success("Sections refreshed"),
+              () => toast.error("Couldn’t refresh sections"),
             )
           }
           size="sm"
           type="button"
           variant="ghost"
         >
-          Refresh sages
+          Refresh sections
         </Button>
         <Button
           disabled={saving}

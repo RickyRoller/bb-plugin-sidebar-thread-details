@@ -55,7 +55,7 @@
     "vaul": "^1.1.2"
   },
   "scripts": {
-    "test": "node --import tsx --test envoys-sidebar.test.mjs",
+    "test": "node --import tsx --test sections-sidebar.test.mjs",
     "typecheck": "tsc --noEmit"
   }
 }

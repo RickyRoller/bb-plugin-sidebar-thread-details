@@ -4,7 +4,12 @@ import { hostContract } from "./contract.js";
 import { appearanceSchema, defaultAppearance } from "./appearance.js";
 
 export const rpcContract = defineRpcContract({
-  refreshEnvoys: { input: z.object({}).strict(), output: z.object({ ok: z.literal(true) }) },
+  // A section provider's data changed: every open sidebar asks that provider
+  // again (see sections.ts). Called by anything but a plugin, it asks all.
+  refreshSections: {
+    input: z.object({}).strict(),
+    output: z.object({ ok: z.literal(true) }),
+  },
   projectBranches: {
     input: z.object({ projectIds: z.array(z.string()) }),
     output: z.record(z.string(), z.string().nullable()),
@@ -65,11 +70,6 @@ export const rpcContract = defineRpcContract({
     input: z.object({}).strict(),
     output: appearanceSchema,
   },
-  // Tells every open sidebar to reload its Sages section.
-  refreshSages: {
-    input: z.object({}).strict(),
-    output: z.object({ ok: z.literal(true) }),
-  },
 });
 
 const APPEARANCE_KEY = "appearance";
@@ -106,8 +106,11 @@ export default function plugin(bb: BbPluginApi) {
   const host = bb.hosts.experimental_client({ contract: hostContract });
 
   bb.rpc.register(rpcContract, {
-    async refreshEnvoys() {
-      bb.realtime.publish("envoys-refresh", {});
+    async refreshSections(_input, { experimental_caller: caller }) {
+      bb.realtime.publish(
+        "sections-refresh",
+        caller.kind === "plugin" ? { pluginId: caller.pluginId } : {},
+      );
       return { ok: true as const };
     },
     async projectBranches({ projectIds }) {
@@ -212,10 +215,6 @@ export default function plugin(bb: BbPluginApi) {
       await bb.storage.kv.delete(APPEARANCE_KEY);
       bb.realtime.publish("appearance", defaultAppearance);
       return defaultAppearance;
-    },
-    async refreshSages() {
-      bb.realtime.publish("sages-refresh", {});
-      return { ok: true as const };
     },
   });
 }
