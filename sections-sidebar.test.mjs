@@ -406,3 +406,103 @@ test("A provider's refresh refetches only its sections, and its activityAt reord
     slot.lifecycle.unmount();
   }
 });
+
+test("A group row heads the threads it claims: an Envoy over its lanes, each lane over its own children", async () => {
+  const base = {
+    projectId: "project-1",
+    titleFallback: null,
+    sectionId: null,
+    status: "idle",
+    isUnread: false,
+    isPinned: false,
+    pinnedAt: null,
+    archivedAt: null,
+    isArchived: false,
+    isHidden: false,
+    indicator: "none",
+    activity: {},
+    createdAt: 1,
+    updatedAt: 1,
+    environment: { id: "env-1", name: null, branchName: "bb/x", isWorktree: true, path: "/w" },
+  };
+  const thread = (id, title, parentThreadId = null) => ({
+    ...base,
+    id,
+    title,
+    parentThreadId,
+    href: `/projects/project-1/threads/${id}`,
+  });
+  const slot = renderSlot(
+    app.threadLists[0],
+    { activeThreadId: null, onNavigate() {}, searchQuery: "" },
+    {
+      sidebarThreads: {
+        status: "ready",
+        threads: [
+          thread("lane-1", "wallet: share card"),
+          thread("worker-1", "device-validator run", "lane-1"),
+          thread("plain", "Unrelated work"),
+        ],
+        projects: [{ id: "project-1", name: "Wallet" }],
+      },
+      rpc: { getAppearance: () => ({}), projectBranches: () => ({}) },
+      sdk: {
+        plugins: sectionProviders({
+          sages: () => ({
+            sections: [
+              {
+                id: "envoys",
+                title: "Envoys",
+                groups: [
+                  {
+                    id: "envoy-1",
+                    label: "Takes share cards",
+                    path: "/plugins/sages/sages/chat-1",
+                    icon: null,
+                    kind: "Envoy",
+                    threadKind: "Lane",
+                    badges: [{ label: "[GE-4738]", placement: "title" }],
+                    threads: [{ threadId: "lane-1", badges: [] }],
+                  },
+                  {
+                    id: "envoy-2",
+                    label: "Fresh Envoy",
+                    path: "/plugins/sages/sages/chat-2",
+                    kind: "Envoy",
+                    threadKind: "Lane",
+                    threads: [],
+                  },
+                ],
+              },
+            ],
+          }),
+        }),
+      },
+      threadActions: () => [],
+    },
+  );
+  try {
+    await waitFor(() => assert.ok(slot.queryByText("Takes share cards")));
+    const envoyLink = slot.getByText("Takes share cards").closest("a");
+    assert.ok(envoyLink.href.endsWith("/plugins/sages/sages/chat-1"));
+    assert.ok(slot.queryByText("[GE-4738]"));
+    assert.ok(slot.queryByText("· 1 lane"));
+    assert.ok(slot.queryByText("· No lanes yet"));
+    // The lane row sits under the Envoy, in the section, with no kind tag or
+    // workspace label (every lane is a worktree).
+    const lane = slot.getByText("wallet: share card");
+    const laneRow = lane.closest("[data-sidebar-thread-id]");
+    assert.ok(!laneRow.textContent.includes("Lane"));
+    assert.ok(!laneRow.textContent.includes("BB worktree"));
+    const envoys = slot.getByLabelText("Envoys");
+    assert.ok(envoys.contains(lane));
+    assert.ok(!envoys.textContent.includes("Unrelated work"));
+    // Its child threads stay with it, one level further in.
+    assert.ok(envoys.textContent.includes("1 children"));
+    // The group folds its lanes away.
+    fireEvent.click(slot.getByLabelText("Hide Takes share cards's lanes"));
+    assert.equal(slot.queryByText("wallet: share card"), null);
+  } finally {
+    slot.lifecycle.unmount();
+  }
+});

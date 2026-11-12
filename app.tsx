@@ -52,6 +52,7 @@ import {
   sortSections,
   type Badge,
   type Section,
+  type SectionGroup,
   type SectionLink,
 } from "./sections";
 import { toast } from "sonner";
@@ -66,10 +67,10 @@ import {
 } from "./components/ui/dialog";
 
 const AppearanceContext = createContext(defaultAppearance);
-// Badges a section provider put on each thread it claims, by thread id.
-const SectionThreadContext = createContext(
-  new Map<string, { badges: readonly Badge[] }>(),
-);
+// Badges a section provider put on each thread it claims, by thread id; for
+// a thread in a group, what it is there ("Lane") and the group's id.
+type Claim = { badges: readonly Badge[]; group?: string };
+const SectionThreadContext = createContext(new Map<string, Claim>());
 
 /**
  * Every section other plugins offer (see sections.ts), kept per provider. A
@@ -586,7 +587,7 @@ function ThreadRow({
             >
               {projectName}
             </span>
-            {claimed ? (
+            {claimed?.group ? null : claimed ? (
               <span className="truncate">
                 ·{" "}
                 {thread.environment?.isWorktree
@@ -930,8 +931,10 @@ function PluginSection({
   section,
   activeThreadId,
   onNavigate,
-  roots,
+  roots: allRoots,
   childrenByRoot,
+  latest,
+  query,
   projectNames,
   expandAll,
 }: {
@@ -940,11 +943,41 @@ function PluginSection({
   onNavigate: () => void;
   roots: readonly PluginSidebarThread[];
   childrenByRoot: ReadonlyMap<string, PluginSidebarThread[]>;
+  latest: ReadonlyMap<string, number>;
+  query: string;
   projectNames: ReadonlyMap<string, string>;
   expandAll: boolean;
 }) {
   const sdk = useSdk();
   const pathname = usePathname();
+  const claimed = useContext(SectionThreadContext);
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Grouped threads go under their group's row; the rest stand alone.
+  const roots = allRoots.filter((thread) => !claimed.get(thread.id)?.group);
+  const groupRoots = new Map<string, PluginSidebarThread[]>();
+  for (const thread of allRoots) {
+    const group = claimed.get(thread.id)?.group;
+    if (group) groupRoots.set(group, [...(groupRoots.get(group) ?? []), thread]);
+  }
+  const groupActivity = (group: SectionGroup) =>
+    Math.max(
+      group.activityAt ?? 0,
+      ...(groupRoots.get(group.id) ?? []).map((root) => latest.get(root.id) ?? 0),
+    );
+  const groups = section.groups
+    .filter(
+      (group) =>
+        !query ||
+        groupRoots.has(group.id) ||
+        `${group.label} ${group.badges.map((badge) => badge.label).join(" ")}`
+          .toLocaleLowerCase()
+          .includes(query),
+    )
+    .map((group, index) => ({ group, index, at: groupActivity(group) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map(({ group }) => group);
   const [expandedParents, setExpandedParents] = useState<Set<string>>(
     () => new Set(),
   );
@@ -965,7 +998,7 @@ function PluginSection({
           const link = byId.get(id);
           return link === undefined ? [] : [link];
         });
-  if (!links.length && !roots.length) return null;
+  if (!links.length && !roots.length && !groups.length) return null;
 
   const reorder = async ({ active, over }: DragEndEvent) => {
     if (over === null || active.id === over.id) return;
@@ -1031,9 +1064,55 @@ function PluginSection({
           </SortableContext>
         </DndContext>
       ) : null}
-      {roots.length ? (
+      {groups.length ? (
         <div className={`space-y-0.5 ${links.length ? "mt-0.5" : ""}`}>
-          {roots.map((thread) => {
+          {groups.map((group) => {
+            const lanes = groupRoots.get(group.id) ?? [];
+            const collapsed = !expandAll && collapsedGroups.has(group.id);
+            return (
+              <div key={group.id}>
+                <GroupRow
+                  group={group}
+                  count={lanes.length}
+                  collapsed={collapsed}
+                  hasActive={lanes.some(
+                    (lane) =>
+                      lane.id === activeThreadId ||
+                      (childrenByRoot.get(lane.id) ?? []).some(
+                        (child) => child.id === activeThreadId,
+                      ),
+                  )}
+                  onNavigate={onNavigate}
+                  onToggle={() =>
+                    setCollapsedGroups((current) => {
+                      const next = new Set(current);
+                      if (next.has(group.id)) next.delete(group.id);
+                      else next.add(group.id);
+                      return next;
+                    })
+                  }
+                  pathname={pathname}
+                />
+                {collapsed || !lanes.length ? null : (
+                  // One step in, on a guide line: these threads belong to the
+                  // row above; their own children nest one step further.
+                  <div className="ml-5 mt-0.5 space-y-0.5 border-l border-border/70">
+                    {lanes.map(rootBlock)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {roots.length ? (
+        <div className={`space-y-0.5 ${links.length || groups.length ? "mt-0.5" : ""}`}>
+          {roots.map(rootBlock)}
+        </div>
+      ) : null}
+    </section>
+  );
+  function rootBlock(thread: PluginSidebarThread) {
             const children = childrenByRoot.get(thread.id) ?? [];
             const expanded = expandAll || expandedParents.has(thread.id);
             return (
@@ -1075,10 +1154,85 @@ function PluginSection({
                 />
               </div>
             );
-          })}
-        </div>
+  }
+}
+
+/**
+ * A group's own row (an Envoy): its kind, label and badges, linking to its
+ * page, with a toggle for the threads under it.
+ */
+function GroupRow({
+  group,
+  count,
+  collapsed,
+  hasActive,
+  onNavigate,
+  onToggle,
+  pathname,
+}: {
+  group: SectionGroup;
+  count: number;
+  collapsed: boolean;
+  hasActive: boolean;
+  onNavigate: () => void;
+  onToggle: () => void;
+  pathname: string;
+}) {
+  const active = pathname === group.path;
+  const titleBadges = group.badges.filter((badge) => badge.placement === "title");
+  const metaBadges = group.badges.filter((badge) => badge.placement !== "title");
+  return (
+    <div
+      className={`group/envoy relative mx-2 flex min-w-0 items-center rounded-lg transition-colors ${
+        active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
+      }`}
+    >
+      <UrlLink
+        href={new URL(group.path, window.location.origin).href}
+        aria-current={active ? "page" : undefined}
+        onClick={onNavigate}
+        className="flex min-w-0 flex-1 flex-col gap-0.5 rounded-lg px-2.5 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          {group.icon ? (
+            <Icon
+              name={group.icon as never}
+              className="size-3.5 shrink-0 text-muted-foreground"
+            />
+          ) : null}
+          <span className="min-w-0 truncate font-medium">{group.label}</span>
+          {titleBadges.length ? (
+            <BadgeList badges={titleBadges} className="flex shrink-0 items-center gap-1" />
+          ) : null}
+        </span>
+        <span className="flex min-w-0 items-center gap-1 text-[11px] leading-4 text-muted-foreground/70">
+          {group.kind ? <span className="shrink-0">{group.kind}</span> : null}
+          <span className="truncate">
+            {group.kind ? "· " : ""}
+            {count
+              ? `${count} ${(group.threadKind ?? "thread").toLocaleLowerCase()}${count === 1 ? "" : "s"}`
+              : `No ${(group.threadKind ?? "thread").toLocaleLowerCase()}s yet`}
+          </span>
+          {metaBadges.length ? (
+            <BadgeList badges={metaBadges} className="flex min-w-0 items-center gap-1" />
+          ) : null}
+        </span>
+      </UrlLink>
+      {count ? (
+        <button
+          aria-expanded={!collapsed}
+          aria-label={`${collapsed ? "Show" : "Hide"} ${group.label}'s ${(group.threadKind ?? "thread").toLocaleLowerCase()}s`}
+          className="mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onToggle}
+          type="button"
+        >
+          <ChevronIcon collapsed={collapsed} />
+          {collapsed && hasActive ? (
+            <span aria-hidden="true" className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-primary" />
+          ) : null}
+        </button>
       ) : null}
-    </section>
+    </div>
   );
 }
 
@@ -1641,16 +1795,29 @@ function SidebarThreadList({
   const sections = useSidebarSections(threads.map((thread) => thread.id));
   // Each claimed thread's badges, and the section that claimed it first.
   const claims = useMemo(() => {
-    const badges = new Map<string, { badges: readonly Badge[] }>();
+    const badges = new Map<string, Claim>();
     const sectionOf = new Map<string, string>();
     const activityAt = new Map<string, number>();
-    for (const section of sections)
-      for (const { threadId, badges: list, activityAt: at } of section.threads)
-        if (!sectionOf.has(threadId)) {
-          sectionOf.set(threadId, `${section.pluginId}\u0000${section.id}`);
-          badges.set(threadId, { badges: list });
-          if (at) activityAt.set(threadId, at);
-        }
+    for (const section of sections) {
+      const key = `${section.pluginId}\u0000${section.id}`;
+      const claim = (
+        { threadId, badges: list, activityAt: at }: Section["threads"][number],
+        group?: SectionGroup,
+      ) => {
+        if (sectionOf.has(threadId)) return;
+        sectionOf.set(threadId, key);
+        badges.set(threadId, {
+          badges: list,
+          ...(group
+            ? { group: group.id }
+            : {}),
+        });
+        if (at) activityAt.set(threadId, at);
+      };
+      for (const group of section.groups)
+        for (const each of group.threads) claim(each, group);
+      for (const each of section.threads) claim(each);
+    }
     return { badges, sectionOf, activityAt };
   }, [sections]);
   const navigate = useBbNavigate();
@@ -1813,7 +1980,7 @@ function SidebarThreadList({
       const key = claims.sectionOf.get(root.id)!;
       rootsBySection.set(key, [...(rootsBySection.get(key) ?? []), root]);
     }
-    return { rootsBySection, children };
+    return { rootsBySection, children, latest };
   }, [threads, visibleThreads, claimOwners, claims]);
   const ordinaryThreads = useMemo(
     () => visibleThreads.filter((thread) => !claimOwners.has(thread.id)),
@@ -1982,6 +2149,8 @@ function SidebarThreadList({
                 ) ?? []
               }
               childrenByRoot={sectionGroups.children}
+              latest={sectionGroups.latest}
+              query={query}
               projectNames={projectNames}
               expandAll={Boolean(query)}
             />

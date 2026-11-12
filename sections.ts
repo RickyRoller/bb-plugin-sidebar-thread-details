@@ -39,6 +39,26 @@ const linkSchema = z.object({
 });
 export type SectionLink = z.infer<typeof linkSchema>;
 
+const sectionThreadSchema = z.object({
+  threadId: z.string(),
+  badges: badgesSchema,
+  activityAt: z.number().nullish().catch(null),
+});
+/**
+ * A row heading threads it groups, such as an Envoy over its lanes. It links
+ * to its own page; each grouped thread keeps its child threads under it.
+ */
+const groupSchema = z.object({
+  ...linkBase,
+  /** What the group is, shown beside its label ("Envoy"). */
+  kind: z.string().max(20).nullish(),
+  /** What each grouped thread is, shown on its row ("Lane"). */
+  threadKind: z.string().max(20).nullish(),
+  activityAt: z.number().nullish().catch(null),
+  threads: z.array(sectionThreadSchema).max(200).default([]),
+});
+export type SectionGroup = z.infer<typeof groupSchema>;
+
 export const sectionSchema = z.object({
   id: z.string().min(1).max(100),
   title: z.string().min(1).max(60),
@@ -50,16 +70,9 @@ export const sectionSchema = z.object({
    * `activityAt` (epoch ms) is activity the provider knows of that the
    * thread's own timestamps may not show yet, such as a turn starting.
    */
-  threads: z
-    .array(
-      z.object({
-        threadId: z.string(),
-        badges: badgesSchema,
-        activityAt: z.number().nullish().catch(null),
-      }),
-    )
-    .max(1000)
-    .default([]),
+  threads: z.array(sectionThreadSchema).max(1000).default([]),
+  /** Group rows, drawn after the links, each over the threads it claims. */
+  groups: z.array(groupSchema).max(200).default([]),
   /** Links can be dragged; the order goes to SECTION_REORDER_METHOD. */
   reorderable: z.boolean().default(false),
 });
@@ -86,6 +99,12 @@ export function mergeSections(
       if (!current) byId.set(parsed.data.id, { ...parsed.data, pluginId });
       else {
         current.threads.push(...parsed.data.threads);
+        // A later page adds its threads to groups already seen.
+        for (const group of parsed.data.groups) {
+          const seen = current.groups.find((each) => each.id === group.id);
+          if (seen) seen.threads.push(...group.threads);
+          else current.groups.push(group);
+        }
         if (!current.links.length) current.links = parsed.data.links;
       }
     }
