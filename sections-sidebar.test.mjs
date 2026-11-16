@@ -91,7 +91,7 @@ test("A title badge stays on the first line, meta badges sit below, worktree con
       sidebarThreads: {
         status: "ready",
         threads: [thread],
-        projects: [{ id: "project-1", name: "Wallet" }],
+        projects: [{ id: "project-1", name: "Web" }],
       },
       rpc: {
         getAppearance: () => ({}),
@@ -105,14 +105,14 @@ test("A title badge stays on the first line, meta badges sit below, worktree con
                 threadId: "thread-1",
                 badges: [
                   {
-                    label: "[WAL-123]",
+                    label: "[APP-123]",
                     placement: "title",
-                    href: "https://linear.app/wallet/issue/WAL-123",
+                    href: "https://linear.app/acme/issue/APP-123",
                   },
                   {
-                    label: "Metro :8099",
+                    label: "Server :8099",
                     tone: "success",
-                    title: "Metro running from /test/worktree/apps/mobile",
+                    title: "Server running from /test/worktree",
                   },
                 ],
               },
@@ -135,22 +135,22 @@ test("A title badge stays on the first line, meta badges sit below, worktree con
     },
   );
   try {
-    await waitFor(() => assert.ok(slot.queryByText("[WAL-123]")));
-    const issue = slot.getByText("[WAL-123]");
+    await waitFor(() => assert.ok(slot.queryByText("[APP-123]")));
+    const issue = slot.getByText("[APP-123]");
     assert.equal(
       issue.getAttribute("href"),
-      "https://linear.app/wallet/issue/WAL-123",
+      "https://linear.app/acme/issue/APP-123",
     );
     assert.ok(slot.queryByText("· BB worktree"));
     const row = slot.getByText("Fix saved-swap crash").closest('[role="link"]');
     assert.ok(row.contains(issue));
-    const metro = slot.getByText("Metro :8099");
-    assert.equal(metro.getAttribute("href"), null);
+    const server = slot.getByText("Server :8099");
+    assert.equal(server.getAttribute("href"), null);
     assert.equal(
-      metro.getAttribute("title"),
-      "Metro running from /test/worktree/apps/mobile",
+      server.getAttribute("title"),
+      "Server running from /test/worktree",
     );
-    assert.ok(!issue.parentElement.contains(metro));
+    assert.ok(!issue.parentElement.contains(server));
     fireEvent.click(issue);
     assert.ok(
       !slot.inspection.navigateCalls.some((call) => call.method === "toThread"),
@@ -214,7 +214,7 @@ test("Claimed threads own their pinned tasks and descendants, sort by latest tas
     sidebarThreads: {
       status: "ready",
       threads,
-      projects: [{ id: "project-1", name: "Wallet" }],
+      projects: [{ id: "project-1", name: "Web" }],
     },
     rpc: {
       getAppearance: () => ({}),
@@ -227,7 +227,7 @@ test("Claimed threads own their pinned tasks and descendants, sort by latest tas
           envoySection([
             {
               threadId: "envoy-a",
-              badges: [{ label: "[WAL-123]", placement: "title" }],
+              badges: [{ label: "[APP-123]", placement: "title" }],
             },
             { threadId: "envoy-b" },
           ]),
@@ -276,7 +276,7 @@ test("Claimed threads own their pinned tasks and descendants, sort by latest tas
     slot.lifecycle.rerender(
       createElement(app.threadLists[0].component, {
         ...props,
-        searchQuery: "WAL-123",
+        searchQuery: "APP-123",
       }),
     );
     assert.ok(slot.queryByText("First task"));
@@ -313,7 +313,7 @@ test("Link sections render with nested links, skipping a malformed section and a
                         links: [
                           {
                             id: "s1",
-                            label: "Wallet sage",
+                            label: "Web sage",
                             path: "/plugins/sages/sages/s1",
                             children: [
                               {
@@ -339,7 +339,7 @@ test("Link sections render with nested links, skipping a malformed section and a
     },
   );
   try {
-    await waitFor(() => assert.ok(slot.queryByText("Wallet sage")));
+    await waitFor(() => assert.ok(slot.queryByText("Web sage")));
     const section = slot.getByRole("region", { name: "Sages" });
     assert.ok(section.contains(slot.getByText("Swap acolyte")));
     assert.equal(
@@ -439,11 +439,11 @@ test("A group row heads the threads it claims: an Envoy over its lanes, each lan
       sidebarThreads: {
         status: "ready",
         threads: [
-          thread("lane-1", "wallet: share card"),
+          thread("lane-1", "Theme tokens"),
           thread("worker-1", "device-validator run", "lane-1"),
           thread("plain", "Unrelated work"),
         ],
-        projects: [{ id: "project-1", name: "Wallet" }],
+        projects: [{ id: "project-1", name: "Web" }],
       },
       rpc: { getAppearance: () => ({}), projectBranches: () => ({}) },
       sdk: {
@@ -456,12 +456,12 @@ test("A group row heads the threads it claims: an Envoy over its lanes, each lan
                 groups: [
                   {
                     id: "envoy-1",
-                    label: "Takes share cards",
+                    label: "Dark mode",
                     path: "/plugins/sages/sages/chat-1",
                     icon: null,
                     kind: "Envoy",
                     threadKind: "Lane",
-                    badges: [{ label: "[GE-4738]", placement: "title" }],
+                    badges: [{ label: "[APP-4738]", placement: "title" }],
                     threads: [{ threadId: "lane-1", badges: [] }],
                   },
                   {
@@ -482,15 +482,15 @@ test("A group row heads the threads it claims: an Envoy over its lanes, each lan
     },
   );
   try {
-    await waitFor(() => assert.ok(slot.queryByText("Takes share cards")));
-    const envoyLink = slot.getByText("Takes share cards").closest("a");
+    await waitFor(() => assert.ok(slot.queryByText("Dark mode")));
+    const envoyLink = slot.getByText("Dark mode").closest("a");
     assert.ok(envoyLink.href.endsWith("/plugins/sages/sages/chat-1"));
-    assert.ok(slot.queryByText("[GE-4738]"));
+    assert.ok(slot.queryByText("[APP-4738]"));
     assert.ok(slot.queryByText("· 1 lane"));
     assert.ok(slot.queryByText("· No lanes yet"));
     // The lane row sits under the Envoy, in the section, with no kind tag or
     // workspace label (every lane is a worktree).
-    const lane = slot.getByText("wallet: share card");
+    const lane = slot.getByText("Theme tokens");
     const laneRow = lane.closest("[data-sidebar-thread-id]");
     assert.ok(!laneRow.textContent.includes("Lane"));
     assert.ok(!laneRow.textContent.includes("BB worktree"));
@@ -500,8 +500,8 @@ test("A group row heads the threads it claims: an Envoy over its lanes, each lan
     // Its child threads stay with it, one level further in.
     assert.ok(envoys.textContent.includes("1 children"));
     // The group folds its lanes away.
-    fireEvent.click(slot.getByLabelText("Hide Takes share cards's lanes"));
-    assert.equal(slot.queryByText("wallet: share card"), null);
+    fireEvent.click(slot.getByLabelText("Hide Dark mode's lanes"));
+    assert.equal(slot.queryByText("Theme tokens"), null);
   } finally {
     slot.lifecycle.unmount();
   }
