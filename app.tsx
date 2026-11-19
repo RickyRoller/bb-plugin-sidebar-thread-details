@@ -875,6 +875,31 @@ function usePathname(): string {
   return pathname;
 }
 
+const LINK_STATUS_LABELS = {
+  working: "Working",
+  unread: "New reply",
+  error: "Last turn failed",
+} as const;
+
+/** A link's status: one small dot, its color saying which. */
+function StatusDot({ status }: { status: SectionLink["status"] }) {
+  if (!status) return null;
+  const color =
+    status === "working"
+      ? "animate-pulse bg-amber-500"
+      : status === "unread"
+        ? "bg-emerald-500"
+        : "bg-destructive";
+  return (
+    <span
+      aria-label={LINK_STATUS_LABELS[status]}
+      title={LINK_STATUS_LABELS[status]}
+      className={`size-1.5 shrink-0 rounded-full ${color}`}
+      role="img"
+    />
+  );
+}
+
 function SectionLinkRow({
   link,
   nested = false,
@@ -913,6 +938,7 @@ function SectionLinkRow({
       >
         {link.label}
       </span>
+      <StatusDot status={link.status} />
       {link.badges.length ? (
         <BadgeList
           badges={link.badges}
@@ -1201,6 +1227,7 @@ function GroupRow({
             />
           ) : null}
           <span className="min-w-0 truncate font-medium">{group.label}</span>
+          <StatusDot status={group.status} />
           {titleBadges.length ? (
             <BadgeList badges={titleBadges} className="flex shrink-0 items-center gap-1" />
           ) : null}

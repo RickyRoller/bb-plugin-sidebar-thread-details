@@ -32,6 +32,12 @@ const linkBase = {
   path: z.string().startsWith("/"),
   icon: z.string().nullish(),
   badges: badgesSchema,
+  /**
+   * A dot after the label: "working" while the linked chat runs a turn,
+   * "unread" when it finished one the user has not seen, "error" when that
+   * turn failed. Unknown values draw nothing.
+   */
+  status: z.enum(["working", "unread", "error"]).nullish().catch(null),
 };
 const linkSchema = z.object({
   ...linkBase,
