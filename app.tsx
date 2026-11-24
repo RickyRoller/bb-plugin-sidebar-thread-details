@@ -294,6 +294,26 @@ function saveCollapsedProjects(ids: Set<string>) {
   }
 }
 
+const groupOrderKey = (section: Section) =>
+  `sidebar-thread-details:group-order:${section.pluginId}:${section.id}`;
+
+function loadGroupOrder(section: Section): string[] {
+  try {
+    const stored = JSON.parse(localStorage.getItem(groupOrderKey(section)) ?? "[]");
+    return Array.isArray(stored) ? stored : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveGroupOrder(section: Section, ids: string[]) {
+  try {
+    localStorage.setItem(groupOrderKey(section), JSON.stringify(ids));
+  } catch {
+    // Storage can be unavailable; the order still holds for the session.
+  }
+}
+
 function ChevronIcon({ collapsed }: { collapsed: boolean }) {
   return (
     <svg
@@ -959,7 +979,6 @@ function PluginSection({
   onNavigate,
   roots: allRoots,
   childrenByRoot,
-  latest,
   query,
   projectNames,
   expandAll,
@@ -969,7 +988,6 @@ function PluginSection({
   onNavigate: () => void;
   roots: readonly PluginSidebarThread[];
   childrenByRoot: ReadonlyMap<string, PluginSidebarThread[]>;
-  latest: ReadonlyMap<string, number>;
   query: string;
   projectNames: ReadonlyMap<string, string>;
   expandAll: boolean;
@@ -987,11 +1005,9 @@ function PluginSection({
     const group = claimed.get(thread.id)?.group;
     if (group) groupRoots.set(group, [...(groupRoots.get(group) ?? []), thread]);
   }
-  const groupActivity = (group: SectionGroup) =>
-    Math.max(
-      group.activityAt ?? 0,
-      ...(groupRoots.get(group.id) ?? []).map((root) => latest.get(root.id) ?? 0),
-    );
+  // Groups keep the order the user dragged them into; new ones go on top.
+  const [groupOrder, setGroupOrder] = useState(() => loadGroupOrder(section));
+  const rank = new Map(groupOrder.map((id, index) => [id, index]));
   const groups = section.groups
     .filter(
       (group) =>
@@ -1001,9 +1017,20 @@ function PluginSection({
           .toLocaleLowerCase()
           .includes(query),
     )
-    .map((group, index) => ({ group, index, at: groupActivity(group) }))
-    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((group, index) => ({ group, index, rank: rank.get(group.id) ?? -1 }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
     .map(({ group }) => group);
+  const reorderGroups = ({ active, over }: DragEndEvent) => {
+    if (over === null || active.id === over.id) return;
+    const ids = groups.map((group) => group.id);
+    const next = arrayMove(
+      ids,
+      ids.indexOf(String(active.id)),
+      ids.indexOf(String(over.id)),
+    );
+    setGroupOrder(next);
+    saveGroupOrder(section, next);
+  };
   const [expandedParents, setExpandedParents] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1091,12 +1118,25 @@ function PluginSection({
         </DndContext>
       ) : null}
       {groups.length ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          onDragEnd={reorderGroups}
+          sensors={sensors}
+        >
+          <SortableContext
+            items={groups.map((group) => group.id)}
+            strategy={verticalListSortingStrategy}
+          >
         <div className={`space-y-0.5 ${links.length ? "mt-0.5" : ""}`}>
           {groups.map((group) => {
             const lanes = groupRoots.get(group.id) ?? [];
             const collapsed = !expandAll && collapsedGroups.has(group.id);
             return (
-              <div key={group.id}>
+              <SortableListItem
+                disabled={Boolean(query) || groups.length < 2}
+                id={group.id}
+                key={group.id}
+              >
                 <GroupRow
                   group={group}
                   count={lanes.length}
@@ -1126,10 +1166,12 @@ function PluginSection({
                     {lanes.map(rootBlock)}
                   </div>
                 )}
-              </div>
+              </SortableListItem>
             );
           })}
         </div>
+          </SortableContext>
+        </DndContext>
       ) : null}
       {roots.length ? (
         <div className={`space-y-0.5 ${links.length || groups.length ? "mt-0.5" : ""}`}>
@@ -2065,14 +2107,20 @@ function SidebarThreadList({
     setOrderedProjectIds(projects.map((project) => project.id));
   }, [projectIdsKey]);
 
+  // bb keeps the personal project out of the project order: it can't move,
+  // and naming it as a neighbor makes the server reject the move.
+  const personalIds = new Set(
+    projects.filter((project) => project.isPersonal).map((project) => project.id),
+  );
+  const isSortableProject = (group: ProjectThreadGroup) =>
+    group.id !== "unknown" && !personalIds.has(group.id);
+
   const reorderProject = async (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const overId = event.over ? String(event.over.id) : null;
     if (!overId || activeId === overId) return;
 
-    const sortableGroups = orderedProjectGroups.filter(
-      (group) => group.id !== "unknown",
-    );
+    const sortableGroups = orderedProjectGroups.filter(isSortableProject);
     const oldIndex = sortableGroups.findIndex((group) => group.id === activeId);
     const newIndex = sortableGroups.findIndex((group) => group.id === overId);
     if (oldIndex === -1 || newIndex === -1) return;
@@ -2094,6 +2142,7 @@ function SidebarThreadList({
     } catch {
       if (requestId === projectOrderRequestId.current) {
         setOrderedProjectIds(projects.map((project) => project.id));
+        toast.error("Couldn’t reorder projects");
       }
     }
   };
@@ -2176,7 +2225,6 @@ function SidebarThreadList({
                 ) ?? []
               }
               childrenByRoot={sectionGroups.children}
-              latest={sectionGroups.latest}
               query={query}
               projectNames={projectNames}
               expandAll={Boolean(query)}
@@ -2205,7 +2253,7 @@ function SidebarThreadList({
             >
               <SortableContext
                 items={orderedProjectGroups
-                  .filter((group) => group.id !== "unknown")
+                  .filter(isSortableProject)
                   .map((group) => group.id)}
                 strategy={verticalListSortingStrategy}
               >
@@ -2214,8 +2262,8 @@ function SidebarThreadList({
                     <SortableListItem
                       disabled={
                         Boolean(query) ||
-                        group.id === "unknown" ||
-                        projects.length < 2
+                        !isSortableProject(group) ||
+                        projects.length - personalIds.size < 2
                       }
                       id={group.id}
                       key={group.id}

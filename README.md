@@ -32,7 +32,7 @@ named `sidebar-section.v1.get`; the sidebar finds every such plugin with
   links?: { id; label; path; icon?; badges?; children?: { id; label; path; icon?; badges? }[] }[];
   threads?: { threadId: string; badges?: Badge[]; activityAt?: number }[];
   // A row heading the threads it claims, such as an Envoy over its lanes
-  groups?: { id; label; path; icon?; badges?; activityAt?;
+  groups?: { id; label; path; icon?; badges?;
              kind?: string;        // shown on the group row ("Envoy")
              threadKind?: string;  // tag on each grouped thread ("Lane")
              threads: { threadId; badges?; activityAt? }[] }[];
@@ -45,7 +45,8 @@ named `sidebar-section.v1.get`; the sidebar finds every such plugin with
 A group draws its own row, linking to its page, with the threads it claims one
 step in on a guide line. Each of those keeps its child threads one step further
 in, so an Envoy, its lanes and their child threads read as three levels. A
-group can fold its threads away, and sorts by the latest activity under it.
+group can fold its threads away. Groups can be dragged into an order kept on
+this device; new groups start at the top.
 
 Claimed threads leave Pinned and Projects and keep their child threads, sorted by
 the latest activity across each group (the threads' own timestamps, or a
